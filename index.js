@@ -157,7 +157,7 @@ WeatherPlusPlatform.prototype = {
 		if (!station.locationCity && (station.service === "tempest"))
 		{
 			// If location city is not set for Tempest, set it so that in HomeKit the Serial Number is reported as "tempest - local"
-			this.locationCity = "local";
+			station.locationCity = "local";
 		}
 		if (!station.locationId && !station.locationCity && !station.locationGeo && !(station.service === "tempest"))
 		{

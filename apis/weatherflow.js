@@ -716,6 +716,12 @@ class TempestAPI
 	parseForecasts(observation_time, values, timezone)
 	{
 		let forecasts = [];
+
+		if (!Array.isArray(values) || values.length === 0)
+		{
+			this.log.warn("Weatherflow forecast payload did not include any daily values");
+			return forecasts;
+		}
 		 
 		// Check to see if we have 'Todays' forecast as it may be too late
 		// in the day (11pm-midnight) for a daily forecast

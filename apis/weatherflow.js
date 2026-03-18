@@ -15,6 +15,8 @@ const converter = require('../util/converter'),
 	wformula = require('weather-formulas'),
 	axios = require('axios');
 
+const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
+
 const UDP_PORT = 50222,
 	UDP_MAX_DATAGRAM_SIZE = 16 * 1024,
 	UDP_MAX_REPORT_INTERVAL_MINUTES = 60,
@@ -56,7 +58,7 @@ function isValidUdpIdentifier(value)
 
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, dependencies = {})
+	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter, dependencies = {})
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -114,6 +116,7 @@ class TempestAPI
 		this.log = log;
 		this.apiKey = apiKey;
 		this.locationId = locationId;
+		this.statusFaultFilter = statusFaultFilter || "ignoreLightning";
 		
 		this.storage = dependencies.storage || require('node-persist');
 		// The saved data is only valid for up to 24hrs (TTL)
@@ -589,6 +592,20 @@ class TempestAPI
 		);
 	}
 
+	getFilteredSensorStatus(sensorStatus)
+	{
+		switch (this.statusFaultFilter)
+		{
+			case "ignoreAll":
+				return 0;
+			case "reportAll":
+				return sensorStatus;
+			case "ignoreLightning":
+			default:
+				return sensorStatus & ~TEMPEST_LIGHTNING_FAULT_MASK;
+		}
+	}
+
 	load() {
 		this.log("Restoring last readings");
 		this.reportCharacteristics.forEach((name) => {
@@ -746,11 +763,10 @@ class TempestAPI
 			// Per API v171, only intepret values defined, ignore all others
 			message.sensor_status = message.sensor_status & 0x1FFFF;
 
-			// Any value other than zero for sensor_status means we have a failure
-			that.currentReport.StatusFault = message.sensor_status == 0 ? false : true;
-			if (that.currentReport.StatusFault) {
-				that.currentReport.StatusFault = false;
-				that.log.debug("Ignoring Tempest sensor failure");
+			const filteredSensorStatus = this.getFilteredSensorStatus(message.sensor_status);
+			that.currentReport.StatusFault = filteredSensorStatus !== 0;
+			if (message.sensor_status !== 0 && filteredSensorStatus === 0) {
+				that.log.debug("Ignoring Tempest sensor failure after applying filter '%s'", this.statusFaultFilter);
 			}
 			if (message.sensor_status == 0) {
 				this.currentReport.SensorString = "Ok";

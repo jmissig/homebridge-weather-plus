@@ -128,6 +128,7 @@ class TempestAPI
 		this.currentReport.AirFirmware = "1.0";
 		this.currentReport.AirSensorFailureLog = -1;
 		this.currentReport.SensorString = "Ok";
+		this.derivedValueWarnings = {};
 
 		// Attempt to restore previous values
 		this.load();
@@ -165,6 +166,52 @@ class TempestAPI
 			  });
 	
 		this.server.bind(50222);
+	}
+
+	logDerivedValueWarning(key, error)
+	{
+		if (!this.derivedValueWarnings[key])
+		{
+			this.derivedValueWarnings[key] = true;
+			this.log.warn("Failed to calculate Tempest %s: %s", key, error.toString());
+		}
+	}
+
+	updateDerivedValue(key, calculate)
+	{
+		try
+		{
+			const value = calculate();
+			if (Number.isFinite(value))
+			{
+				this.currentReport[key] = value;
+				delete this.derivedValueWarnings[key];
+			}
+		}
+		catch (error)
+		{
+			this.logDerivedValueWarning(key, error);
+		}
+	}
+
+	updateDerivedTemperatures(temperatureC, humidity, windSpeed)
+	{
+		this.updateDerivedValue("DewPoint", () =>
+			wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
+				wformula.temperature.celciusToKelvin(temperatureC),
+				humidity))
+		);
+
+		this.updateDerivedValue("TemperatureApparent", () =>
+			wformula.temperature.kelvinToCelcius(wformula.temperature.australianApparentTemperature(
+				wformula.temperature.celciusToKelvin(temperatureC),
+				humidity,
+				windSpeed))
+		);
+
+		this.updateDerivedValue("TemperatureWetBulb", () =>
+			converter.getWetBulbTemperature(temperatureC, humidity)
+		);
 	}
 
 	load() {
@@ -430,15 +477,11 @@ class TempestAPI
 			// We could get out of range values if the sensors have failed.
 			if (that.currentReport.Humidity > 0 && that.currentReport.Humidity <= 100 &&
 				that.currentReport.Temperature > -100 && that.currentReport.Temperature < 100) {
-				that.currentReport.DewPoint = wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature), 
-					that.currentReport.Humidity));
-				that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianApparentTemperature(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature),
+				that.updateDerivedTemperatures(
+					that.currentReport.Temperature,
 					that.currentReport.Humidity,
-					that.currentReport.WindSpeed));
-				that.currentReport.TemperatureWetBulb =
-					converter.getWetBulbTemperature(that.currentReport.Temperature, that.currentReport.Humidity);
+					that.currentReport.WindSpeed
+				);
 			}
 			that.currentReport.TemperatureMin = (that.currentReport.Temperature < that.currentReport.TemperatureMin) ?
 					that.currentReport.Temperature : that.currentReport.TemperatureMin;
@@ -525,16 +568,11 @@ class TempestAPI
             // We could get out of range values if the sensors have failed.
             if (that.currentReport.Humidity > 0 && that.currentReport.Humidity <= 100 &&
                     that.currentReport.Temperature > -100 && that.currentReport.Temperature < 100) {
-                that.currentReport.DewPoint = wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature), 
-					that.currentReport.Humidity));
-
-                that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianApparentTemperature(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature),
+                that.updateDerivedTemperatures(
+					that.currentReport.Temperature,
 					that.currentReport.Humidity,
-					message.obs[0][2]));
-                that.currentReport.TemperatureWetBulb =
-					converter.getWetBulbTemperature(that.currentReport.Temperature, that.currentReport.Humidity);
+					message.obs[0][2]
+				);
             }
             
             that.currentReport.LightLevel = message.obs[0][9];
@@ -705,4 +743,3 @@ class TempestAPI
 module.exports = {
 	TempestAPI: TempestAPI
 };
-

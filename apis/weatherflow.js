@@ -237,7 +237,7 @@ class TempestAPI
 			this.log.debug(`Loading ${name}`);
 			let result = this.storage.getItemSync(name);
 			// Only update the default value if loaded something
-			if (result) {
+			if (typeof result !== 'undefined') {
 					this.currentReport[name] = result;
 					this.log.debug(`Loaded ${name} with ${result}`);
 			}
@@ -309,6 +309,7 @@ class TempestAPI
 			let that = this;
 			weather.report = that.currentReport;
 			callback(null, weather);
+			this.save(that.currentReport);
 		}
 	}
 

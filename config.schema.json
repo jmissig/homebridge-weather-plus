@@ -489,6 +489,14 @@
                   "notitle": true
                 },
                 {
+                  "key": "stations[].tempestFaultFilter",
+                  "title": "Tempest fault reporting",
+                  "description": "Choose which Tempest sensor faults should be surfaced to HomeKit.",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest'"
+                  }
+                },
+                {
                   "key": "stations[].now",
                   "title": "Show current conditions",
                   "description": "Deselect to hide the current conditions and only show forecasts."

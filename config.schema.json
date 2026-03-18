@@ -204,6 +204,24 @@
               }
             ]
           },
+          "tempestFaultFilter": {
+            "type": "string",
+            "default": "ignoreLightning",
+            "oneOf": [
+              {
+                "title": "Ignore Lightning Faults",
+                "const": "ignoreLightning"
+              },
+              {
+                "title": "Report All Faults",
+                "const": "reportAll"
+              },
+              {
+                "title": "Ignore All Faults",
+                "const": "ignoreAll"
+              }
+            ]
+          },
           "now": {
             "type": "boolean",
             "default": true

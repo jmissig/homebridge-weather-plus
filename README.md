@@ -178,13 +178,20 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
 **stationId**  
 (Optional - only needed for Forecasts) Your personal StationID. Viewing your [station settings](https://tempestwx.com/settings/station/), it is the number on the end of the URL.
 
+**tempestFaultFilter**  
+(Optional - Tempest only) Controls which Tempest `sensor_status` faults are surfaced to HomeKit through `StatusFault`. Default is `"ignoreLightning"`, because WeatherFlow frequently reports lightning-related fault bits in normal operation.  
+`"ignoreLightning"` **(recommended)** Ignore lightning, lightning noise, and lightning disturber fault bits, but report other Tempest faults.  
+`"reportAll"` Report all Tempest fault bits to HomeKit.  
+`"ignoreAll"` Suppress all Tempest faults in HomeKit.
+
 ```json
 "platforms": [
     {
         "platform": "WeatherPlus",
         "service": "tempest",
         "key": "PERSONAL_USE_TOKEN",
-        "stationId": "STATION_ID"
+        "stationId": "STATION_ID",
+        "tempestFaultFilter": "ignoreLightning"
     }
 ]
 ```

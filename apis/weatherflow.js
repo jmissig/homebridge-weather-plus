@@ -65,10 +65,11 @@ class TempestAPI
 			'TemperatureMin', // air_temp_low
 			'RainChance' // precip_probability
 		];
-		this.forecastDays = 10;
+		this.forecastDays = 0;
 		
 		// Only define the update variable if we have an apiKey and locationId
 		if (apiKey && apiKey.length > 0 && locationId && locationId.length > 0) {
+			this.forecastDays = 10;
 			this.lastForecastUpdate = -1;
 			}
 	

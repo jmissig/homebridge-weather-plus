@@ -17,7 +17,7 @@ const converter = require('../util/converter'),
 	axios = require('axios');
 
 const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
-const OBSERVATIONS_FILENAME = "observations.jsonl";
+const OBSERVATIONS_FILENAME = "weather-observations.jsonl";
 const OBSERVATION_SCHEMA = "weather.current_report.v1";
 
 let lastEmittedObservationKey = null;

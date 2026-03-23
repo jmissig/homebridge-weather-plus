@@ -376,13 +376,17 @@ class TempestAPI
 
 	appendObservationIfNeeded(messageType)
 	{
-		const emissionTypes = ['rapid_wind', 'evt_precip', 'obs_air', 'obs_sky', 'obs_st'];
-		if (!emissionTypes.includes(messageType))
+		if (messageType !== 'obs_st' && messageType !== 'obs_sky')
 		{
 			return;
 		}
 
 		if (!this.hasFreshLiveStationData)
+		{
+			return;
+		}
+
+		if (messageType === 'obs_sky' && !this.hasFreshLiveAirData)
 		{
 			return;
 		}

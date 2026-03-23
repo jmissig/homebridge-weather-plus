@@ -11,10 +11,16 @@
 const converter = require('../util/converter'),
 	moment = require('moment-timezone'),
 	dgram = require("dgram"),
+	fs = require("fs"),
+	path = require("path"),
 	wformula = require('weather-formulas'),
 	axios = require('axios');
 
 const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
+const OBSERVATIONS_FILENAME = "observations.jsonl";
+const OBSERVATION_SCHEMA = "weather.current_report.v1";
+
+let lastEmittedObservationKey = null;
 
 class TempestAPI
 {
@@ -82,10 +88,14 @@ class TempestAPI
 		this.storage = require('node-persist');
 		// The saved data is only valid for up to 24hrs (TTL)
 		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
+		this.observationsPath = path.join(cacheDirectory, OBSERVATIONS_FILENAME);
 		this.rainAccumulation = [];
 		// Fill the array with zeros so that when we sum them up, it doesn't get NaN
 		for (var i = 0; i < 60; i++) this.rainAccumulation[i] = 0.0;
 		this.rainAccumulationMinute = 0;
+		this.hasFreshLiveStationData = false;
+		this.hasFreshLiveAirData = false;
+		this.hasFreshLiveSkyData = false;
 		
 		this.currentReport = {};
 	
@@ -311,6 +321,90 @@ class TempestAPI
 			weather.report = that.currentReport;
 			callback(null, weather);
 			this.save(that.currentReport);
+		}
+	}
+
+	buildObservationPayload()
+	{
+		return {
+			schema: OBSERVATION_SCHEMA,
+			captured_at: moment().format(),
+			temperature_c: this.currentReport.Temperature,
+			humidity_pct: this.currentReport.Humidity,
+			airpressure_hpa: this.currentReport.AirPressure,
+			dewpoint_c: this.currentReport.DewPoint,
+			apparenttemperature_c: this.currentReport.TemperatureApparent,
+			wetbulbtemperature_c: this.currentReport.TemperatureWetBulb,
+			lightlevel_lux: this.currentReport.LightLevel,
+			uvindex: this.currentReport.UVIndex,
+			solarradiation_wm2: this.currentReport.SolarRadiation,
+			windspeed_ms: this.currentReport.WindSpeed,
+			windlull_ms: this.currentReport.WindSpeedLull,
+			windgust_ms: this.currentReport.WindSpeedMax,
+			winddirection_compass: this.currentReport.WindDirection,
+			raining: this.currentReport.RainBool,
+			rain1h_mm: this.currentReport.Rain1h,
+			rainday_mm: this.currentReport.RainDay,
+			lightningstrikes: this.currentReport.LightningStrikes,
+			lightningavgdistance_km: this.currentReport.LightningAvgDistance
+		};
+	}
+
+	markFreshLiveStationData(messageType)
+	{
+		if (messageType == 'obs_st')
+		{
+			this.hasFreshLiveStationData = true;
+			return;
+		}
+
+		if (messageType == 'obs_air')
+		{
+			this.hasFreshLiveAirData = true;
+		}
+
+		if (messageType == 'obs_sky')
+		{
+			this.hasFreshLiveSkyData = true;
+		}
+
+		if (this.hasFreshLiveAirData && this.hasFreshLiveSkyData)
+		{
+			this.hasFreshLiveStationData = true;
+		}
+	}
+
+	appendObservationIfNeeded(messageType)
+	{
+		const emissionTypes = ['rapid_wind', 'evt_precip', 'obs_air', 'obs_sky', 'obs_st'];
+		if (!emissionTypes.includes(messageType))
+		{
+			return;
+		}
+
+		if (!this.hasFreshLiveStationData)
+		{
+			return;
+		}
+
+		const payload = this.buildObservationPayload();
+		const dedupePayload = Object.assign({}, payload);
+		delete dedupePayload.captured_at;
+
+		const observationKey = JSON.stringify(dedupePayload);
+		if (observationKey === lastEmittedObservationKey)
+		{
+			return;
+		}
+
+		try
+		{
+			fs.appendFileSync(this.observationsPath, JSON.stringify(payload) + "\n", "utf8");
+			lastEmittedObservationKey = observationKey;
+		}
+		catch (error)
+		{
+			this.log.error("Failed to append Tempest observation to %s: %s", this.observationsPath, error.toString());
 		}
 	}
 
@@ -621,6 +715,9 @@ class TempestAPI
 			}
             
         }
+
+		this.markFreshLiveStationData(message.type);
+		this.appendObservationIfNeeded(message.type);
 	}
 	
 	getForecastConditionCategory(icon, detail = false)

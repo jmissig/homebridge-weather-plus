@@ -19,7 +19,7 @@ const converter = require('../util/converter'),
 
 const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
 const OBSERVATIONS_FILENAME = "weather-observations.jsonl";
-const OBSERVATION_SCHEMA = "weather.current_report.v1";
+const OBSERVATION_SCHEMA = "weather.current_report.v2";
 
 let lastEmittedObservationKey = null;
 
@@ -169,6 +169,7 @@ class TempestAPI
 		this.currentReport.LightLevel = 0;
 		this.currentReport.TemperatureWetBulb = 0;
 		this.currentReport.StatusFault = 0;
+		this.currentReport.ObservedAtEpoch = null;
 
 		// Non-exposed Weather report characteristics
 		// Sky or Tempest station (unlikely to have both)
@@ -703,7 +704,7 @@ class TempestAPI
 	{
 		return {
 			schema: OBSERVATION_SCHEMA,
-			captured_at: moment().format(),
+			observed_at_epoch: this.currentReport.ObservedAtEpoch,
 			temperature_c: this.currentReport.Temperature,
 			humidity_pct: this.currentReport.Humidity,
 			airpressure_hpa: this.currentReport.AirPressure,
@@ -768,7 +769,7 @@ class TempestAPI
 
 		const payload = this.buildObservationPayload();
 		const dedupePayload = Object.assign({}, payload);
-		delete dedupePayload.captured_at;
+		delete dedupePayload.observed_at_epoch;
 
 		const observationKey = JSON.stringify(dedupePayload);
 		if (observationKey === lastEmittedObservationKey)
@@ -959,6 +960,7 @@ class TempestAPI
 			that.currentReport.AirSerialNumber = message.serial_number;
 			that.currentReport.ObservationStation = that.currentReport.AirSerialNumber;
 			that.currentReport.AirFirmware = message.firmware_revision;
+			that.currentReport.ObservedAtEpoch = message.obs[0][0];
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.AirPressure = message.obs[0][1];
 			that.currentReport.Temperature = message.obs[0][2];
@@ -997,6 +999,7 @@ class TempestAPI
 			that.currentReport.SkySerialNumber = message.serial_number;
 			that.currentReport.ObservationStation = that.currentReport.SkySerialNumber;
 			that.currentReport.SkyFirmware = message.firmware_revision;
+			that.currentReport.ObservedAtEpoch = message.obs[0][0];
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.LightLevel = message.obs[0][1];
 			that.currentReport.UVIndex = message.obs[0][2];
@@ -1041,6 +1044,7 @@ class TempestAPI
             that.currentReport.SkySerialNumber = message.serial_number;
       	    that.currentReport.ObservationStation = that.currentReport.SkySerialNumber;
             that.currentReport.SkyFirmware = message.firmware_revision;
+            that.currentReport.ObservedAtEpoch = message.obs[0][0];
             that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
             
             // Wind values are min/max over last minute

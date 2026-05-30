@@ -5,7 +5,7 @@
   "description": "A comprehensive weather plugin for homekit with current observations, forecasts and history.",
   "license": "MIT",
   "scripts": {
-    "test": "node test/characteristics-perms.test.js"
+    "test": "node test/characteristics-perms.test.js && node test/weather-formulas-contract.test.js"
   },
   "keywords": [
     "homebridge-plugin",

@@ -4,7 +4,7 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/naofireblade/homebridge-weather-plus.svg?style=flat-square)](https://github.com/naofireblade/homebridge-weather-plus)
 [![Weather](https://img.shields.io/badge/weather-sunny-edd100.svg?style=flat-square)](https://github.com/naofireblade/homebridge-weather-plus)
 
-> **Fork status:** This is [jmissig's fork](https://github.com/jmissig/homebridge-weather-plus) of [naofireblade/homebridge-weather-plus](https://github.com/naofireblade/homebridge-weather-plus). For now, the fork intends to stay closely synchronized with upstream and contribute generally useful fixes back when practical. Its primary maintenance focus is staying ahead of upstream where necessary to keep the WeatherFlow Tempest integration working as dependencies, APIs, and Homebridge evolve. It also provides a place to experiment with optional Tempest-specific features, such as writing local UDP-derived Tempest observation records to a JSONL file. These records come from the station's local broadcasts rather than WeatherFlow's cloud/API or app-adjusted observation path, though the file is not a byte-for-byte dump of the UDP packets. This fork is not currently published as a separate npm package; the npm links and installation command below refer to the upstream package.
+> **Fork status:** This is [jmissig's fork](https://github.com/jmissig/homebridge-weather-plus) of [naofireblade/homebridge-weather-plus](https://github.com/naofireblade/homebridge-weather-plus). For now, the fork intends to stay closely synchronized with upstream and contribute generally useful fixes back when practical. Its primary maintenance focus is staying ahead of upstream where necessary to keep the WeatherFlow Tempest integration working as dependencies, APIs, and Homebridge evolve. It also provides a place to experiment with optional Tempest-specific features, such as writing local UDP-derived Tempest observation records to a JSONL file. These records come from the station's local broadcasts rather than WeatherFlow's cloud/API or app-adjusted observation path, though the file is not a byte-for-byte dump of the UDP packets. This fork is not currently published as a separate npm package; the npm badges and links refer to the upstream package. See the fork-specific installation command below.
 
 This is a weather plugin for [homebridge](https://github.com/nfarina/homebridge) that features current observations, daily forecasts and history graphs for multiple locations and services. You can download it via [npm](https://www.npmjs.com/package/homebridge-weather-plus).  
 
@@ -50,7 +50,7 @@ This plugin supports multiple weather services. Each has its own advantages. The
 ## Installation
 
 1. Install homebridge using: `npm install -g homebridge`
-2. Install this plugin using: `npm install -g homebridge-weather-plus` *Note: The installation might take 5 minutes.*
+2. Install this fork using: `npm install -g github:jmissig/homebridge-weather-plus` *Note: The installation might take 5 minutes.*
 3. Gather an API key for a weather service from the register link in the table above
 4. Configure via the plugin `homebridge-config-ui-x` or update your configuration file manually. See the explanations and samples below.
 

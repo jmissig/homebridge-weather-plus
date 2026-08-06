@@ -192,17 +192,20 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
 (Optional - Tempest only) An absolute path for the observation JSONL file. Relative paths are ignored and the default path is used instead. The parent directory must already exist and be writable by Homebridge.
 
 ```json
-"platforms": [
-    {
-        "platform": "WeatherPlus",
-        "service": "tempest",
-        "key": "PERSONAL_USE_TOKEN",
-        "stationId": "STATION_ID",
-        "tempestFaultFilter": "ignoreLightning",
-        "tempestObservationOutput": true,
-        "tempestObservationOutputPath": "/var/lib/homebridge/weather-observations.jsonl"
-    }
-]
+{
+    "platform": "WeatherPlus",
+    "stations": [
+        {
+            "nameNow": "Weather",
+            "service": "tempest",
+            "key": "PERSONAL_USE_TOKEN",
+            "stationId": "STATION_ID",
+            "tempestFaultFilter": "ignoreLightning",
+            "tempestObservationOutput": true,
+            "tempestObservationOutputPath": "/var/lib/homebridge/weather-observations.jsonl"
+        }
+    ]
+}
 ```
 
 ## Advanced Configuration

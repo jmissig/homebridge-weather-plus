@@ -22,9 +22,19 @@ const OBSERVATION_SCHEMA = "weather.current_report.v2";
 
 let lastEmittedObservationKey = null;
 
+function resolveObservationOutputPath(cacheDirectory, configuredPath)
+{
+	if (configuredPath && path.isAbsolute(configuredPath))
+	{
+		return configuredPath;
+	}
+
+	return path.join(cacheDirectory, OBSERVATIONS_FILENAME);
+}
+
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter)
+	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter, observationOutputEnabled, observationOutputPath)
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -88,7 +98,12 @@ class TempestAPI
 		this.storage = require('node-persist');
 		// The saved data is only valid for up to 24hrs (TTL)
 		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
-		this.observationsPath = path.join(cacheDirectory, OBSERVATIONS_FILENAME);
+		this.observationOutputEnabled = observationOutputEnabled === true;
+		this.observationsPath = resolveObservationOutputPath(cacheDirectory, observationOutputPath);
+		if (observationOutputPath && !path.isAbsolute(observationOutputPath))
+		{
+			this.log.warn("Tempest observation output path must be absolute; using default path %s", this.observationsPath);
+		}
 		this.rainAccumulation = [];
 		// Fill the array with zeros so that when we sum them up, it doesn't get NaN
 		for (var i = 0; i < 60; i++) this.rainAccumulation[i] = 0.0;
@@ -377,6 +392,11 @@ class TempestAPI
 
 	appendObservationIfNeeded(messageType)
 	{
+		if (!this.observationOutputEnabled)
+		{
+			return;
+		}
+
 		if (messageType !== 'obs_st' && messageType !== 'obs_sky')
 		{
 			return;
@@ -870,5 +890,6 @@ class TempestAPI
 }
 
 module.exports = {
-	TempestAPI: TempestAPI
+	TempestAPI: TempestAPI,
+	resolveObservationOutputPath: resolveObservationOutputPath
 };

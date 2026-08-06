@@ -91,7 +91,16 @@ function WeatherPlusPlatform(_log, _config)
 				break;
 			case "tempest":
 				this.log.info("Adding station with weather service TempestAPI named '" + config.nameNow + "'");
-				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, this.log, HomebridgeAPI.user.persistPath(), config.tempestFaultFilter));
+				this.stations.push(new tempest(
+					config.key,
+					config.locationId,
+					config.conditionDetail,
+					this.log,
+					HomebridgeAPI.user.persistPath(),
+					config.tempestFaultFilter,
+					config.tempestObservationOutput,
+					config.tempestObservationOutputPath
+				));
 				this.interval = 1;  // Tempest broadcasts new data every minute, forecasts are limited to once per hour
 				break;
 			default:
@@ -194,6 +203,8 @@ WeatherPlusPlatform.prototype = {
 		station.apiVersion = ["auto", "2.5", "3.0"].includes(stationConfig.openWeatherMapApiVersion) ? stationConfig.openWeatherMapApiVersion : "auto";
 		station.tempestFaultFilter = stationConfig.tempestFaultFilter || "ignoreLightning";
 		station.tempestFaultFilter = ["ignoreLightning", "reportAll", "ignoreAll"].includes(station.tempestFaultFilter) ? station.tempestFaultFilter : "ignoreLightning";
+		station.tempestObservationOutput = stationConfig.tempestObservationOutput === true;
+		station.tempestObservationOutputPath = typeof stationConfig.tempestObservationOutputPath === "string" ? stationConfig.tempestObservationOutputPath.trim() : "";
 
 		// Separate humidity accessory
 		station.extraHumidity = stationConfig.extraHumidity || false;

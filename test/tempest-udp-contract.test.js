@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { TempestAPI } = require("../apis/weatherflow");
+const { TempestAPI, resolveObservationOutputPath } = require("../apis/weatherflow");
 
 function createLog()
 {
@@ -13,13 +13,14 @@ function createLog()
 	return log;
 }
 
-function createTempestHarness(observationsPath)
+function createTempestHarness(observationsPath, observationOutputEnabled = false)
 {
 	const tempest = Object.create(TempestAPI.prototype);
 	tempest.conditionDetail = false;
 	tempest.statusFaultFilter = "ignoreLightning";
 	tempest.log = createLog();
 	tempest.observationsPath = observationsPath;
+	tempest.observationOutputEnabled = observationOutputEnabled;
 	tempest.derivedValueWarnings = {};
 	tempest.rainAccumulation = new Array(60).fill(0);
 	tempest.rainAccumulationMinute = 0;
@@ -70,7 +71,24 @@ const observationsPath = path.join(tempDirectory, "weather-observations.jsonl");
 
 try
 {
-	const tempest = createTempestHarness(observationsPath);
+	const customPath = path.join(tempDirectory, "custom-observations.jsonl");
+	assert.strictEqual(
+		resolveObservationOutputPath(tempDirectory, ""),
+		path.join(tempDirectory, "weather-observations.jsonl")
+	);
+	assert.strictEqual(resolveObservationOutputPath(tempDirectory, customPath), customPath);
+	assert.strictEqual(
+		resolveObservationOutputPath(tempDirectory, "relative-observations.jsonl"),
+		path.join(tempDirectory, "weather-observations.jsonl")
+	);
+
+	const disabledPath = path.join(tempDirectory, "disabled-observations.jsonl");
+	const disabledTempest = createTempestHarness(disabledPath);
+	disabledTempest.hasFreshLiveStationData = true;
+	disabledTempest.appendObservationIfNeeded("obs_st");
+	assert.strictEqual(fs.existsSync(disabledPath), false, "observation output should be off by default");
+
+	const tempest = createTempestHarness(observationsPath, true);
 
 	// Official UDP shape: https://weatherflow.github.io/Tempest/api/udp.html
 	tempest.parseMessage({

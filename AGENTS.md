@@ -7,6 +7,7 @@ This fork exists to keep the WeatherFlow Tempest integration working. Weather Pl
 - Prioritize the Tempest flow when choosing fixes, tests, dependency updates, and compatibility work.
 - Avoid expanding or refactoring other provider integrations unless a Tempest change requires shared infrastructure work or an obvious regression must be prevented.
 - The main Tempest implementation is in `apis/weatherflow.js`. Its current-observation path consumes local UDP broadcasts, while its optional forecast path uses WeatherFlow's remote API with a personal access token and station ID.
+- JSONL observation output is a Tempest-only, opt-in feature and must remain disabled by default. Custom output locations must be absolute paths.
 - Tempest configuration and service selection also touch `index.js`, `config.schema.json`, and the Tempest section of `README.md`.
 
 ## Official WeatherFlow Tempest references

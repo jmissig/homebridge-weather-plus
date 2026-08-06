@@ -4,6 +4,8 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/naofireblade/homebridge-weather-plus.svg?style=flat-square)](https://github.com/naofireblade/homebridge-weather-plus)
 [![Weather](https://img.shields.io/badge/weather-sunny-edd100.svg?style=flat-square)](https://github.com/naofireblade/homebridge-weather-plus)
 
+> **Fork status:** This is [jmissig's fork](https://github.com/jmissig/homebridge-weather-plus) of [naofireblade/homebridge-weather-plus](https://github.com/naofireblade/homebridge-weather-plus). For now, the fork intends to stay closely synchronized with upstream and contribute generally useful fixes back when practical. Its primary maintenance focus is staying ahead of upstream where necessary to keep the WeatherFlow Tempest integration working as dependencies, APIs, and Homebridge evolve. It also provides a place to experiment with optional Tempest-specific features, such as writing local UDP-derived Tempest observation records to a JSONL file. These records come from the station's local broadcasts rather than WeatherFlow's cloud/API or app-adjusted observation path, though the file is not a byte-for-byte dump of the UDP packets. This fork is not currently published as a separate npm package; the npm links and installation command below refer to the upstream package.
+
 This is a weather plugin for [homebridge](https://github.com/nfarina/homebridge) that features current observations, daily forecasts and history graphs for multiple locations and services. You can download it via [npm](https://www.npmjs.com/package/homebridge-weather-plus).  
 
 ![Screenshots](https://user-images.githubusercontent.com/12081369/69379083-feb05300-0caf-11ea-9a0d-cf8e1879d007.png)
@@ -187,6 +189,12 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
 `"reportAll"` Report all Tempest fault bits to HomeKit.  
 `"ignoreAll"` Suppress all Tempest faults in HomeKit.
 
+**tempestObservationOutput**
+(Optional - Tempest only) Set to `true` to append each unique local UDP-derived Tempest observation record to a JSONL file. These records are built from the station's local broadcasts rather than WeatherFlow's cloud/API or app-adjusted observation path; they are not byte-for-byte UDP packet dumps. This is disabled by default. When enabled without a custom path, observations are written to `weather-observations.jsonl` in the Homebridge persist directory.
+
+**tempestObservationOutputPath**
+(Optional - Tempest only) An absolute path for the observation JSONL file. Relative paths are ignored and the default path is used instead. The parent directory must already exist and be writable by Homebridge.
+
 ```json
 "platforms": [
     {
@@ -194,7 +202,9 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
         "service": "tempest",
         "key": "PERSONAL_USE_TOKEN",
         "stationId": "STATION_ID",
-        "tempestFaultFilter": "ignoreLightning"
+        "tempestFaultFilter": "ignoreLightning",
+        "tempestObservationOutput": true,
+        "tempestObservationOutputPath": "/var/lib/homebridge/weather-observations.jsonl"
     }
 ]
 ```

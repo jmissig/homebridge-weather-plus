@@ -204,6 +204,31 @@
               }
             ]
           },
+          "tempestFaultFilter": {
+            "type": "string",
+            "default": "ignoreLightning",
+            "oneOf": [
+              {
+                "title": "Ignore Lightning Faults",
+                "const": "ignoreLightning"
+              },
+              {
+                "title": "Report All Faults",
+                "const": "reportAll"
+              },
+              {
+                "title": "Ignore All Faults",
+                "const": "ignoreAll"
+              }
+            ]
+          },
+          "tempestObservationOutput": {
+            "type": "boolean",
+            "default": false
+          },
+          "tempestObservationOutputPath": {
+            "type": "string"
+          },
           "now": {
             "type": "boolean",
             "default": true
@@ -469,6 +494,31 @@
                 {
                   "key": "stations[].conditionCategory",
                   "notitle": true
+                },
+                {
+                  "key": "stations[].tempestFaultFilter",
+                  "title": "Tempest fault reporting",
+                  "description": "Choose which Tempest sensor faults should be surfaced to HomeKit.",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest'"
+                  }
+                },
+                {
+                  "key": "stations[].tempestObservationOutput",
+                  "title": "Write Tempest observations to JSONL",
+                  "description": "Append unique local UDP-derived Tempest observation records to a JSONL file. Disabled by default.",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest'"
+                  }
+                },
+                {
+                  "key": "stations[].tempestObservationOutputPath",
+                  "title": "Tempest observation output path",
+                  "description": "Optional absolute file path. Leave blank to use the Homebridge persist directory.",
+                  "placeholder": "/absolute/path/weather-observations.jsonl",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest' && model.stations[arrayIndices[0]].tempestObservationOutput === true"
+                  }
                 },
                 {
                   "key": "stations[].now",

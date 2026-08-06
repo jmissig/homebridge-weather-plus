@@ -82,7 +82,16 @@ function WeatherPlusPlatform(_log, _config)
 				break;
 			case "tempest":
 				this.log.info("Adding station with weather service TempestAPI named '" + config.nameNow + "'");
-				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, this.log, HomebridgeAPI.user.persistPath()));
+				this.stations.push(new tempest(
+					config.key,
+					config.locationId,
+					config.conditionDetail,
+					this.log,
+					HomebridgeAPI.user.persistPath(),
+					config.tempestFaultFilter,
+					config.tempestObservationOutput,
+					config.tempestObservationOutputPath
+				));
 				this.interval = 1;  // Tempest broadcasts new data every minute, forecasts are limited to once per hour
 				break;
 			default:
@@ -146,7 +155,7 @@ WeatherPlusPlatform.prototype = {
 		if (!station.locationCity && (station.service === "tempest"))
 		{
 			// If location city is not set for Tempest, set it so that in HomeKit the Serial Number is reported as "tempest - local"
-			this.locationCity = "local";
+			station.locationCity = "local";
 		}
 		if (!station.locationId && !station.locationCity && !station.locationGeo && !(station.service === "tempest"))
 		{
@@ -172,6 +181,10 @@ WeatherPlusPlatform.prototype = {
 
 		// Condition detail level
 		station.conditionDetail = stationConfig.conditionCategory || "simple";
+		station.tempestFaultFilter = stationConfig.tempestFaultFilter || "ignoreLightning";
+		station.tempestFaultFilter = ["ignoreLightning", "reportAll", "ignoreAll"].includes(station.tempestFaultFilter) ? station.tempestFaultFilter : "ignoreLightning";
+		station.tempestObservationOutput = stationConfig.tempestObservationOutput === true;
+		station.tempestObservationOutputPath = typeof stationConfig.tempestObservationOutputPath === "string" ? stationConfig.tempestObservationOutputPath.trim() : "";
 
 		// Separate humidity accessory
 		station.extraHumidity = stationConfig.extraHumidity || false;
@@ -504,4 +517,3 @@ WeatherPlusPlatform.prototype = {
 		}
 	}
 };
-

@@ -11,12 +11,30 @@
 const converter = require('../util/converter'),
 	moment = require('moment-timezone'),
 	dgram = require("dgram"),
+	fs = require("fs"),
+	path = require("path"),
 	wformula = require('weather-formulas'),
 	axios = require('axios');
 
+const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
+const OBSERVATIONS_FILENAME = "weather-observations.jsonl";
+const OBSERVATION_SCHEMA = "weather.current_report.v2";
+
+let lastEmittedObservationKey = null;
+
+function resolveObservationOutputPath(cacheDirectory, configuredPath)
+{
+	if (configuredPath && path.isAbsolute(configuredPath))
+	{
+		return configuredPath;
+	}
+
+	return path.join(cacheDirectory, OBSERVATIONS_FILENAME);
+}
+
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory)
+	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter, observationOutputEnabled, observationOutputPath)
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -63,10 +81,11 @@ class TempestAPI
 			'TemperatureMin', // air_temp_low
 			'RainChance' // precip_probability
 		];
-		this.forecastDays = 10;
+		this.forecastDays = 0;
 		
 		// Only define the update variable if we have an apiKey and locationId
 		if (apiKey && apiKey.length > 0 && locationId && locationId.length > 0) {
+			this.forecastDays = 10;
 			this.lastForecastUpdate = -1;
 			}
 	
@@ -74,14 +93,24 @@ class TempestAPI
 		this.log = log;
 		this.apiKey = apiKey;
 		this.locationId = locationId;
+		this.statusFaultFilter = statusFaultFilter || "ignoreLightning";
 		
 		this.storage = require('node-persist');
 		// The saved data is only valid for up to 24hrs (TTL)
 		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
+		this.observationOutputEnabled = observationOutputEnabled === true;
+		this.observationsPath = resolveObservationOutputPath(cacheDirectory, observationOutputPath);
+		if (observationOutputPath && !path.isAbsolute(observationOutputPath))
+		{
+			this.log.warn("Tempest observation output path must be absolute; using default path %s", this.observationsPath);
+		}
 		this.rainAccumulation = [];
 		// Fill the array with zeros so that when we sum them up, it doesn't get NaN
 		for (var i = 0; i < 60; i++) this.rainAccumulation[i] = 0.0;
 		this.rainAccumulationMinute = 0;
+		this.hasFreshLiveStationData = false;
+		this.hasFreshLiveAirData = false;
+		this.hasFreshLiveSkyData = false;
 		
 		this.currentReport = {};
 	
@@ -115,6 +144,7 @@ class TempestAPI
 		this.currentReport.LightLevel = 0;
 		this.currentReport.TemperatureWetBulb = 0;
 		this.currentReport.StatusFault = 0;
+		this.currentReport.ObservedAtEpoch = null;
 
 		// Non-exposed Weather report characteristics
 		// Sky or Tempest station (unlikely to have both)
@@ -128,6 +158,7 @@ class TempestAPI
 		this.currentReport.AirFirmware = "1.0";
 		this.currentReport.AirSensorFailureLog = -1;
 		this.currentReport.SensorString = "Ok";
+		this.derivedValueWarnings = {};
 
 		// Attempt to restore previous values
 		this.load();
@@ -167,13 +198,73 @@ class TempestAPI
 		this.server.bind(50222);
 	}
 
+	logDerivedValueWarning(key, error)
+	{
+		if (!this.derivedValueWarnings[key])
+		{
+			this.derivedValueWarnings[key] = true;
+			this.log.warn("Failed to calculate Tempest %s: %s", key, error.toString());
+		}
+	}
+
+	updateDerivedValue(key, calculate)
+	{
+		try
+		{
+			const value = calculate();
+			if (Number.isFinite(value))
+			{
+				this.currentReport[key] = value;
+				delete this.derivedValueWarnings[key];
+			}
+		}
+		catch (error)
+		{
+			this.logDerivedValueWarning(key, error);
+		}
+	}
+
+	updateDerivedTemperatures(temperatureC, humidity, windSpeed)
+	{
+		this.updateDerivedValue("DewPoint", () =>
+			wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
+				wformula.temperature.celciusToKelvin(temperatureC),
+				humidity))
+		);
+
+		this.updateDerivedValue("TemperatureApparent", () =>
+			wformula.temperature.kelvinToCelcius(wformula.temperature.australianApparentTemperature(
+				wformula.temperature.celciusToKelvin(temperatureC),
+				humidity,
+				windSpeed))
+		);
+
+		this.updateDerivedValue("TemperatureWetBulb", () =>
+			converter.getWetBulbTemperature(temperatureC, humidity)
+		);
+	}
+
+	getFilteredSensorStatus(sensorStatus)
+	{
+		switch (this.statusFaultFilter)
+		{
+			case "ignoreAll":
+				return 0;
+			case "reportAll":
+				return sensorStatus;
+			case "ignoreLightning":
+			default:
+				return sensorStatus & ~TEMPEST_LIGHTNING_FAULT_MASK;
+		}
+	}
+
 	load() {
 		this.log("Restoring last readings");
 		this.reportCharacteristics.forEach((name) => {
 			this.log.debug(`Loading ${name}`);
 			let result = this.storage.getItemSync(name);
 			// Only update the default value if loaded something
-			if (result) {
+			if (typeof result !== 'undefined') {
 					this.currentReport[name] = result;
 					this.log.debug(`Loaded ${name} with ${result}`);
 			}
@@ -245,6 +336,100 @@ class TempestAPI
 			let that = this;
 			weather.report = that.currentReport;
 			callback(null, weather);
+			this.save(that.currentReport);
+		}
+	}
+
+	buildObservationPayload()
+	{
+		return {
+			schema: OBSERVATION_SCHEMA,
+			observed_at_epoch: this.currentReport.ObservedAtEpoch,
+			temperature_c: this.currentReport.Temperature,
+			humidity_pct: this.currentReport.Humidity,
+			airpressure_hpa: this.currentReport.AirPressure,
+			dewpoint_c: this.currentReport.DewPoint,
+			apparenttemperature_c: this.currentReport.TemperatureApparent,
+			wetbulbtemperature_c: this.currentReport.TemperatureWetBulb,
+			lightlevel_lux: this.currentReport.LightLevel,
+			uvindex: this.currentReport.UVIndex,
+			solarradiation_wm2: this.currentReport.SolarRadiation,
+			windspeed_ms: this.currentReport.WindSpeed,
+			windlull_ms: this.currentReport.WindSpeedLull,
+			windgust_ms: this.currentReport.WindSpeedMax,
+			winddirection_compass: this.currentReport.WindDirection,
+			raining: this.currentReport.RainBool,
+			rain1h_mm: this.currentReport.Rain1h,
+			rainday_mm: this.currentReport.RainDay,
+			lightningstrikes: this.currentReport.LightningStrikes,
+			lightningavgdistance_km: this.currentReport.LightningAvgDistance
+		};
+	}
+
+	markFreshLiveStationData(messageType)
+	{
+		if (messageType == 'obs_st')
+		{
+			this.hasFreshLiveStationData = true;
+			return;
+		}
+
+		if (messageType == 'obs_air')
+		{
+			this.hasFreshLiveAirData = true;
+		}
+
+		if (messageType == 'obs_sky')
+		{
+			this.hasFreshLiveSkyData = true;
+		}
+
+		if (this.hasFreshLiveAirData && this.hasFreshLiveSkyData)
+		{
+			this.hasFreshLiveStationData = true;
+		}
+	}
+
+	appendObservationIfNeeded(messageType)
+	{
+		if (!this.observationOutputEnabled)
+		{
+			return;
+		}
+
+		if (messageType !== 'obs_st' && messageType !== 'obs_sky')
+		{
+			return;
+		}
+
+		if (!this.hasFreshLiveStationData)
+		{
+			return;
+		}
+
+		if (messageType === 'obs_sky' && !this.hasFreshLiveAirData)
+		{
+			return;
+		}
+
+		const payload = this.buildObservationPayload();
+		const dedupePayload = Object.assign({}, payload);
+		delete dedupePayload.observed_at_epoch;
+
+		const observationKey = JSON.stringify(dedupePayload);
+		if (observationKey === lastEmittedObservationKey)
+		{
+			return;
+		}
+
+		try
+		{
+			fs.appendFileSync(this.observationsPath, JSON.stringify(payload) + "\n", "utf8");
+			lastEmittedObservationKey = observationKey;
+		}
+		catch (error)
+		{
+			this.log.error("Failed to append Tempest observation to %s: %s", this.observationsPath, error.toString());
 		}
 	}
 
@@ -324,11 +509,10 @@ class TempestAPI
 			// Per API v171, only intepret values defined, ignore all others
 			message.sensor_status = message.sensor_status & 0x1FFFF;
 
-			// Any value other than zero for sensor_status means we have a failure
-			that.currentReport.StatusFault = message.sensor_status == 0 ? false : true;
-			if (that.currentReport.StatusFault) {
-				that.currentReport.StatusFault = false;
-				that.log.debug("Ignoring Tempest sensor failure");
+			const filteredSensorStatus = this.getFilteredSensorStatus(message.sensor_status);
+			that.currentReport.StatusFault = filteredSensorStatus !== 0;
+			if (message.sensor_status !== 0 && filteredSensorStatus === 0) {
+				that.log.debug("Ignoring Tempest sensor failure after applying filter '%s'", this.statusFaultFilter);
 			}
 			if (message.sensor_status == 0) {
 				this.currentReport.SensorString = "Ok";
@@ -421,6 +605,7 @@ class TempestAPI
 			that.currentReport.AirSerialNumber = message.serial_number;
 			that.currentReport.ObservationStation = that.currentReport.AirSerialNumber;
 			that.currentReport.AirFirmware = message.firmware_revision;
+			that.currentReport.ObservedAtEpoch = message.obs[0][0];
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.AirPressure = message.obs[0][1];
 			that.currentReport.Temperature = message.obs[0][2];
@@ -430,15 +615,11 @@ class TempestAPI
 			// We could get out of range values if the sensors have failed.
 			if (that.currentReport.Humidity > 0 && that.currentReport.Humidity <= 100 &&
 				that.currentReport.Temperature > -100 && that.currentReport.Temperature < 100) {
-				that.currentReport.DewPoint = wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature), 
-					that.currentReport.Humidity));
-				that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianAapparentTemperature(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature),
+				that.updateDerivedTemperatures(
+					that.currentReport.Temperature,
 					that.currentReport.Humidity,
-					that.currentReport.WindSpeed));
-				that.currentReport.TemperatureWetBulb =
-					converter.getWetBulbTemperature(that.currentReport.Temperature, that.currentReport.Humidity);
+					that.currentReport.WindSpeed
+				);
 			}
 			that.currentReport.TemperatureMin = (that.currentReport.Temperature < that.currentReport.TemperatureMin) ?
 					that.currentReport.Temperature : that.currentReport.TemperatureMin;
@@ -463,6 +644,7 @@ class TempestAPI
 			that.currentReport.SkySerialNumber = message.serial_number;
 			that.currentReport.ObservationStation = that.currentReport.SkySerialNumber;
 			that.currentReport.SkyFirmware = message.firmware_revision;
+			that.currentReport.ObservedAtEpoch = message.obs[0][0];
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.LightLevel = message.obs[0][1];
 			that.currentReport.UVIndex = message.obs[0][2];
@@ -507,6 +689,7 @@ class TempestAPI
             that.currentReport.SkySerialNumber = message.serial_number;
       	    that.currentReport.ObservationStation = that.currentReport.SkySerialNumber;
             that.currentReport.SkyFirmware = message.firmware_revision;
+            that.currentReport.ObservedAtEpoch = message.obs[0][0];
             that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
             
             // Wind values are min/max over last minute
@@ -525,16 +708,11 @@ class TempestAPI
             // We could get out of range values if the sensors have failed.
             if (that.currentReport.Humidity > 0 && that.currentReport.Humidity <= 100 &&
                     that.currentReport.Temperature > -100 && that.currentReport.Temperature < 100) {
-                that.currentReport.DewPoint = wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature), 
-					that.currentReport.Humidity));
-
-                that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianAapparentTemperature(
-					wformula.temperature.celciusToKelvin(that.currentReport.Temperature),
+                that.updateDerivedTemperatures(
+					that.currentReport.Temperature,
 					that.currentReport.Humidity,
-					message.obs[0][2]));
-                that.currentReport.TemperatureWetBulb =
-					converter.getWetBulbTemperature(that.currentReport.Temperature, that.currentReport.Humidity);
+					message.obs[0][2]
+				);
             }
             
             that.currentReport.LightLevel = message.obs[0][9];
@@ -565,6 +743,9 @@ class TempestAPI
 			}
             
         }
+
+		this.markFreshLiveStationData(message.type);
+		this.appendObservationIfNeeded(message.type);
 	}
 	
 	getForecastConditionCategory(icon, detail = false)
@@ -660,6 +841,12 @@ class TempestAPI
 	parseForecasts(observation_time, values, timezone)
 	{
 		let forecasts = [];
+
+		if (!Array.isArray(values) || values.length === 0)
+		{
+			this.log.warn("Weatherflow forecast payload did not include any daily values");
+			return forecasts;
+		}
 		 
 		// Check to see if we have 'Todays' forecast as it may be too late
 		// in the day (11pm-midnight) for a daily forecast
@@ -703,6 +890,6 @@ class TempestAPI
 }
 
 module.exports = {
-	TempestAPI: TempestAPI
+	TempestAPI: TempestAPI,
+	resolveObservationOutputPath: resolveObservationOutputPath
 };
-

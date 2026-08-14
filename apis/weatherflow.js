@@ -182,6 +182,10 @@ class TempestAPI
 		this.udpRestartPending = false;
 		this.udpClosingServer = null;
 		this.udpFailureCount = 0;
+		this.udpGeneration = 0;
+		this.udpRestartCount = 0;
+		this.udpRecovery = null;
+		this.udpPacketWarnings = new Set();
 
 		this.createUdpServer();
 	}
@@ -189,23 +193,25 @@ class TempestAPI
 	createUdpServer()
 	{
 		if (this.disposed) return;
+		const generation = ++this.udpGeneration;
+		this.udpPacketWarnings = new Set();
 
 		let server;
 		try {
 			server = this.createSocket({type: 'udp4', reuseAddr: true});
 		} catch (err) {
-			this.handleUdpError(null, err);
+			this.handleUdpError(null, err, generation);
 			return;
 		}
 
 		this.server = server;
 		server.on('error', (err) => {
-			if (!this.disposed && server === this.server) this.handleUdpError(server, err);
+			if (!this.disposed && server === this.server) this.handleUdpError(server, err, generation);
 		});
 
 		server.on('message', (msg, rinfo) => {
-			if (this.disposed || server !== this.server) return;
-			this.handleUdpDatagram(msg, rinfo);
+			if (this.disposed || this.udpRestartPending || server !== this.server) return;
+			this.handleUdpDatagram(msg, rinfo, generation);
 		});
 
 		server.on('listening', () => {
@@ -213,58 +219,54 @@ class TempestAPI
 			const address = server.address();
 			this.lastObservationAt = this.now();
 			this.startUdpWatchdog();
-			this.log(`server listening ${address.address}:${address.port}`);
+			this.log(`WeatherFlow UDP listener generation ${generation} listening on ${address.address}:${address.port}`);
 		});
 
 		server.on('close', () => {
 			if (server !== this.server) return;
 			this.server = null;
 			if (!this.disposed && !this.udpRestartPending) {
-				this.scheduleUdpRestart("server closed unexpectedly", this.nextUdpRetryDelay());
+				this.scheduleUdpRestart("socket closed unexpectedly", this.nextUdpRetryDelay(), {generation: generation});
 			}
 		});
 
 		try {
 			server.bind(UDP_PORT);
 		} catch (err) {
-			this.handleUdpError(server, err);
+			this.handleUdpError(server, err, generation);
 		}
 	}
 
-	handleUdpDatagram(msg, rinfo)
+	handleUdpDatagram(msg, rinfo, generation = this.udpGeneration)
 	{
-		const decoded = this.decodeUdpDatagram(msg);
+		const decoded = this.decodeUdpDatagram(msg, generation);
 		if (!decoded) return;
 		if (decoded.observation) {
 			// Every structurally valid observation proves that the UDP path is alive,
 			// even if its payload is a duplicate or cannot update weather values.
-			this.recordUdpObservation(decoded.reportIntervalMinutes);
+			this.recordUdpObservation(decoded.reportIntervalMinutes, decoded.message, rinfo, generation);
 		}
 
 		const rawMessage = msg.toString();
-		if (rawMessage === this.prevMsg) {
-			this.log.debug(`Duplicate WeatherFlow UDP message: ${decoded.message.type}`);
-			return;
-		}
+		if (rawMessage === this.prevMsg) return;
 		this.prevMsg = rawMessage;
 
-		this.log.debug(`Server got: ${decoded.message.type}`);
 		if (!decoded.parse) {
-			this.log.debug(`Ignoring invalid WeatherFlow UDP ${decoded.message.type} data`);
+			this.warnUdpPacket(`invalid-${decoded.message.type}`, `invalid ${decoded.message.type} data`, generation);
 			return;
 		}
 
 		this.parseMessage(decoded.message);
 	}
 
-	decodeUdpDatagram(msg)
+	decodeUdpDatagram(msg, generation = this.udpGeneration)
 	{
 		if (!Buffer.isBuffer(msg)) {
-			this.log.debug("Ignoring WeatherFlow UDP payload that is not a buffer");
+			this.warnUdpPacket("non-buffer", "payload was not a buffer", generation);
 			return null;
 		}
 		if (msg.length > UDP_MAX_DATAGRAM_SIZE) {
-			this.log.debug(`Ignoring oversized WeatherFlow UDP payload (${msg.length} bytes)`);
+			this.warnUdpPacket("oversized", `payload was ${msg.length} bytes`, generation);
 			return null;
 		}
 
@@ -272,17 +274,17 @@ class TempestAPI
 		try {
 			message = JSON.parse(msg.toString("utf8"));
 		} catch (err) {
-			this.log.debug(`Ignoring malformed WeatherFlow UDP JSON: ${err.message}`);
+			this.warnUdpPacket("malformed-json", "payload was not valid JSON", generation);
 			return null;
 		}
 
-		return this.validateUdpMessage(message);
+		return this.validateUdpMessage(message, generation);
 	}
 
-	validateUdpMessage(message)
+	validateUdpMessage(message, generation = this.udpGeneration)
 	{
 		if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string") {
-			this.log.debug("Ignoring WeatherFlow UDP message with an invalid envelope");
+			this.warnUdpPacket("invalid-envelope", "message had an invalid envelope", generation);
 			return null;
 		}
 
@@ -290,12 +292,14 @@ class TempestAPI
 			const valid = typeof message.serial_number === "string" &&
 				isValidEpochSeconds(message.timestamp) &&
 				isNonNegativeInteger(message.sensor_status);
+			if (!valid) this.warnUdpPacket("invalid-device-status", "invalid device_status message", generation);
 			return valid ? {message: message, observation: false, parse: true} : null;
 		}
 
 		if (message.type === "evt_precip") {
 			const valid = typeof message.serial_number === "string" && Array.isArray(message.evt) &&
 				message.evt.length >= 1 && isValidEpochSeconds(message.evt[0]);
+			if (!valid) this.warnUdpPacket("invalid-evt-precip", "invalid evt_precip message", generation);
 			return valid ? {message: message, observation: false, parse: true} : null;
 		}
 
@@ -303,6 +307,7 @@ class TempestAPI
 			const valid = typeof message.serial_number === "string" && Array.isArray(message.ob) &&
 				message.ob.length >= 3 && isValidEpochSeconds(message.ob[0]) &&
 				isFiniteInRange(message.ob[1], 0, 200) && isFiniteInRange(message.ob[2], 0, 360);
+			if (!valid) this.warnUdpPacket("invalid-rapid-wind", "invalid rapid_wind message", generation);
 			return valid ? {message: message, observation: false, parse: true} : null;
 		}
 
@@ -338,11 +343,18 @@ class TempestAPI
 			}
 		};
 		const layout = observationLayouts[message.type];
-		if (!layout || typeof message.serial_number !== "string" || !Array.isArray(message.obs) ||
-			!Array.isArray(message.obs[0]) || message.obs[0].length < layout.minimumLength) return null;
+		if (!layout) return null;
+		if (typeof message.serial_number !== "string" || !Array.isArray(message.obs) ||
+			!Array.isArray(message.obs[0]) || message.obs[0].length < layout.minimumLength) {
+			this.warnUdpPacket(`invalid-${message.type}`, `invalid ${message.type} structure`, generation);
+			return null;
+		}
 
 		const observation = message.obs[0];
-		if (!isValidEpochSeconds(observation[0])) return null;
+		if (!isValidEpochSeconds(observation[0])) {
+			this.warnUdpPacket(`invalid-${message.type}`, `invalid ${message.type} observation epoch`, generation);
+			return null;
+		}
 
 		const advertisedInterval = observation[layout.reportIntervalIndex];
 		const reportIntervalMinutes = isFiniteNumber(advertisedInterval) && advertisedInterval > 0 &&
@@ -356,11 +368,32 @@ class TempestAPI
 		};
 	}
 
-	handleUdpError(server, err)
+	warnUdpPacket(category, detail, generation = this.udpGeneration)
 	{
-		if (this.disposed || (server && server !== this.server) || this.udpRestartPending) return;
-		this.log.error(`server error:\n${err.stack || err}`);
-		this.scheduleUdpRestart("socket error", this.nextUdpRetryDelay());
+		if (generation !== this.udpGeneration || this.udpPacketWarnings.has(category)) return;
+		this.udpPacketWarnings.add(category);
+		this.log.warn(`Ignoring WeatherFlow UDP packet in generation ${generation}: ${detail}`);
+	}
+
+	formatUdpLogValue(value)
+	{
+		if (typeof value !== "string" || value.length === 0) return "unknown";
+		return value.replace(/[\x00-\x1F\x7F,=\u2028\u2029]/g, "?").slice(0, 64);
+	}
+
+	handleUdpError(server, err, generation = this.udpGeneration)
+	{
+		if (this.disposed || generation !== this.udpGeneration ||
+			(server && server !== this.server) || this.udpRestartPending) return;
+		const errorName = err && err.name ? this.formatUdpLogValue(err.name) : "Error";
+		const errorCode = err && err.code ? this.formatUdpLogValue(String(err.code)) : "unknown";
+		const errorMessage = err && err.message ? this.formatUdpLogValue(err.message) : "unknown error";
+		this.scheduleUdpRestart("socket error", this.nextUdpRetryDelay(), {
+			generation: generation,
+			errorName: errorName,
+			errorCode: errorCode,
+			errorMessage: errorMessage
+		});
 	}
 
 	nextUdpRetryDelay()
@@ -370,11 +403,18 @@ class TempestAPI
 		return UDP_RETRY_DELAYS[delayIndex];
 	}
 
-	scheduleUdpRestart(reason, delay)
+	scheduleUdpRestart(reason, delay, details = {})
 	{
 		if (this.disposed || this.udpRestartPending) return;
 		this.udpRestartPending = true;
 		this.stopUdpWatchdog();
+		this.udpRestartCount++;
+		const generation = details.generation || this.udpGeneration;
+		this.udpRecovery = {
+			reason: reason,
+			fromGeneration: generation,
+			restartCount: this.udpRestartCount
+		};
 
 		const server = this.server;
 		const queueReplacement = () => {
@@ -391,8 +431,16 @@ class TempestAPI
 			}, delay);
 		};
 
-		const retryDescription = delay > 0 ? ` in ${Math.round(delay / 1000)} seconds` : "";
-		this.log.warn(`Restarting WeatherFlow UDP server${retryDescription} (${reason})`);
+		const observationAge = this.lastObservationAt === null ? null : Math.max(0, this.now() - this.lastObservationAt);
+		const ageDescription = observationAge === null ? "unknown" : Math.floor(observationAge / (60 * 1000));
+		let warning = `WeatherFlow UDP recovery ${this.udpRestartCount} scheduled: generation=${generation}` +
+			`, reason=${reason}, delaySeconds=${Math.round(delay / 1000)}` +
+			`, observationAgeMinutes=${ageDescription}` +
+			`, staleThresholdMinutes=${Math.round(this.observationStaleTimeout / (60 * 1000))}`;
+		if (details.errorName) warning += `, error=${details.errorName}`;
+		if (details.errorCode) warning += `, code=${details.errorCode}`;
+		if (details.errorMessage) warning += `, message=${details.errorMessage}`;
+		this.log.warn(warning);
 		if (!server) {
 			queueReplacement();
 			return;
@@ -456,7 +504,7 @@ class TempestAPI
 		this.scheduleUdpRestart(`no observations for ${observationAgeMinutes} minutes`, 0);
 	}
 
-	recordUdpObservation(reportIntervalMinutes)
+	recordUdpObservation(reportIntervalMinutes, message, rinfo, generation = this.udpGeneration)
 	{
 		this.lastObservationAt = this.now();
 		this.udpFailureCount = 0;
@@ -467,6 +515,20 @@ class TempestAPI
 			);
 		} else {
 			this.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
+		}
+
+		if (this.udpRecovery !== null && generation > this.udpRecovery.fromGeneration) {
+			const sourceAddress = rinfo && rinfo.address ? this.formatUdpLogValue(String(rinfo.address)) : "unknown";
+			const sourcePort = rinfo && Number.isFinite(rinfo.port) ? rinfo.port : "unknown";
+			const type = message ? this.formatUdpLogValue(message.type) : "unknown";
+			const serial = message ? this.formatUdpLogValue(message.serial_number) : "unknown";
+			const hub = message ? this.formatUdpLogValue(message.hub_sn) : "unknown";
+			const interval = Number.isFinite(reportIntervalMinutes) ? reportIntervalMinutes : "unknown";
+			this.log(`WeatherFlow UDP listener recovered: generation=${generation}` +
+				`, restart=${this.udpRecovery.restartCount}, type=${type}, serial=${serial}, hub=${hub}` +
+				`, source=${sourceAddress}:${sourcePort}, reportIntervalMinutes=${interval}` +
+				`, staleThresholdMinutes=${Math.round(this.observationStaleTimeout / (60 * 1000))}`);
+			this.udpRecovery = null;
 		}
 	}
 

@@ -538,3 +538,110 @@ test('invalid non-observation messages do not mutate current weather', () => {
 	assert.strictEqual(harness.api.currentReport.WindSpeed, 0);
 	assert.strictEqual(harness.api.currentReport.ObservationStation, 'Unknown');
 });
+
+test('listener and recovery logs describe generations without per-packet noise', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	harness.sockets[0].message(tempestObservation(1));
+
+	assert(harness.log.entries.some((entry) => entry[0] === 'info' &&
+		entry[1].includes('generation 1 listening on 0.0.0.0:50222')));
+	assert.strictEqual(harness.log.entries.some((entry) => String(entry[1]).includes('Server got')), false);
+
+	harness.clock.tick(15 * MINUTE);
+	const recoveryWarnings = harness.log.entries.filter((entry) => entry[0] === 'warn' &&
+		entry[1].includes('WeatherFlow UDP recovery'));
+	assert.strictEqual(recoveryWarnings.length, 1);
+	assert(recoveryWarnings[0][1].includes('generation=1'));
+	assert(recoveryWarnings[0][1].includes('reason=no observations for 15 minutes'));
+	assert(recoveryWarnings[0][1].includes('observationAgeMinutes=15'));
+	assert(recoveryWarnings[0][1].includes('staleThresholdMinutes=15'));
+});
+
+test('duplicate socket errors emit one bounded recovery warning with error details', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	const firstError = new Error('address already in use');
+	firstError.code = 'EADDRINUSE';
+	firstError.stack = 'RAW-STACK-SENTINEL\n' + 'x'.repeat(1000);
+	harness.sockets[0].emit('error', firstError);
+	harness.sockets[0].emit('error', new Error('duplicate'));
+
+	const warnings = harness.log.entries.filter((entry) => entry[0] === 'warn' &&
+		entry[1].includes('WeatherFlow UDP recovery'));
+	assert.strictEqual(warnings.length, 1);
+	assert(warnings[0][1].includes('error=Error'));
+	assert(warnings[0][1].includes('code=EADDRINUSE'));
+	assert(warnings[0][1].includes('message=address already in use'));
+	assert.strictEqual(JSON.stringify(harness.log.entries).includes('RAW-STACK-SENTINEL'), false);
+});
+
+test('the first observation after replacement logs one successful recovery', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	harness.sockets[0].emit('error', new Error('test failure'));
+	harness.clock.tick(30 * 1000);
+	harness.sockets[1].listen();
+
+	const message = tempestObservation(1);
+	message.serial_number = 'ST-TEST\nINJECTED, source=FORGED';
+	message.hub_sn = 'HB-TEST\u2028, restart=99';
+	harness.sockets[1].datagram(Buffer.from(JSON.stringify(message)), {
+		address: '192.0.2.10',
+		port: 50222
+	});
+	harness.sockets[1].message(message);
+
+	const recovered = harness.log.entries.filter((entry) => entry[0] === 'info' &&
+		entry[1].includes('WeatherFlow UDP listener recovered'));
+	assert.strictEqual(recovered.length, 1);
+	assert(recovered[0][1].includes('generation=2'));
+	assert(recovered[0][1].includes('restart=1'));
+	assert(recovered[0][1].includes('serial=ST-TEST?INJECTED? source?FORGED'));
+	assert(recovered[0][1].includes('hub=HB-TEST?? restart?99'));
+	assert(recovered[0][1].includes('source=192.0.2.10:50222'));
+	assert(recovered[0][1].includes('reportIntervalMinutes=1'));
+	assert(recovered[0][1].includes('staleThresholdMinutes=15'));
+	assert.strictEqual(recovered[0][1].includes('\n'), false);
+});
+
+test('an observation queued on the closing generation cannot claim recovery', () => {
+	const harness = createHarness({deferClose: true});
+	harness.sockets[0].listen();
+	harness.sockets[0].emit('error', new Error('test failure'));
+	harness.sockets[0].message(tempestObservation(1));
+
+	let recovered = harness.log.entries.filter((entry) => entry[0] === 'info' &&
+		entry[1].includes('WeatherFlow UDP listener recovered'));
+	assert.strictEqual(recovered.length, 0);
+
+	harness.sockets[0].finishClose();
+	harness.clock.tick(30 * 1000);
+	harness.sockets[1].listen();
+	harness.sockets[1].message(tempestObservation(1));
+	recovered = harness.log.entries.filter((entry) => entry[0] === 'info' &&
+		entry[1].includes('WeatherFlow UDP listener recovered'));
+	assert.strictEqual(recovered.length, 1);
+	assert(recovered[0][1].includes('generation=2'));
+});
+
+test('malformed packet warnings are bounded per category and listener generation', () => {
+	const harness = createHarness();
+	const secretPayload = Buffer.from('{"access_token":"DO-NOT-LOG"');
+	harness.sockets[0].datagram(secretPayload);
+	harness.sockets[0].datagram(secretPayload);
+	harness.sockets[0].datagram(Buffer.alloc(16 * 1024 + 1));
+	harness.sockets[0].datagram(Buffer.alloc(16 * 1024 + 2));
+
+	let ignoredWarnings = harness.log.entries.filter((entry) => entry[0] === 'warn' &&
+		entry[1].includes('Ignoring WeatherFlow UDP packet'));
+	assert.strictEqual(ignoredWarnings.length, 2);
+	assert.strictEqual(JSON.stringify(harness.log.entries).includes('DO-NOT-LOG'), false);
+
+	harness.sockets[0].emit('error', new Error('test failure'));
+	harness.clock.tick(30 * 1000);
+	harness.sockets[1].datagram(secretPayload);
+	ignoredWarnings = harness.log.entries.filter((entry) => entry[0] === 'warn' &&
+		entry[1].includes('Ignoring WeatherFlow UDP packet'));
+	assert.strictEqual(ignoredWarnings.length, 3);
+});

@@ -80,11 +80,11 @@ The listener currently includes these appropriate protections:
 
 These behaviors should remain small and explicit. A full general-purpose connection state machine is not currently necessary.
 
-## Recommended hardening
+## Hardening status
 
-### 1. Intentional shutdown and disposal
+### 1. Intentional shutdown and disposal — implemented
 
-Add an idempotent disposal path to the Tempest adapter and invoke it from Homebridge's `shutdown` event.
+The Tempest adapter now has an idempotent disposal path invoked from Homebridge's `shutdown` event.
 
 Disposal should:
 
@@ -97,9 +97,9 @@ Disposal should:
 
 Calling `unref()` on background timers can be an additional safeguard, but it does not replace explicit cleanup. The socket must still be closed.
 
-### 2. Monotonic freshness time
+### 2. Monotonic freshness time — implemented
 
-Use a monotonic clock such as `performance.now()` or `process.hrtime()` for observation age and retry timing.
+Observation age and retry decisions now use an injected monotonic `performance.now()` clock.
 
 Wall-clock changes caused by time synchronization, administrator changes, or clock corrections should not:
 
@@ -109,7 +109,7 @@ Wall-clock changes caused by time synchronization, administrator changes, or clo
 
 Continue injecting the clock in tests.
 
-### 3. Runtime packet validation
+### 3. Runtime packet validation — implemented
 
 Treat every UDP payload as untrusted input, regardless of whether the code is JavaScript or TypeScript.
 
@@ -135,7 +135,7 @@ Protocol handling should:
 
 Transport liveness should remain separate from downstream formula calculation. A structurally valid, intended observation may prove UDP delivery even if one derived weather calculation fails.
 
-### 4. Station identity and foreign packets
+### 4. Station identity and foreign packets — deliberately deferred
 
 UDP broadcast packets are not authenticated. A second WeatherFlow station, test process, or other LAN host can send the same JSON shape.
 
@@ -152,7 +152,9 @@ Only a valid observation from the selected identity should:
 
 Do not use the source IP address as the sole durable identity because DHCP can change it. The source address from Node's `rinfo` remains useful diagnostic context.
 
-### 5. Bounded, transition-level logging
+The normal deployment is a trusted home LAN with one station. Identity selection is therefore deferred until multi-station interference or foreign-packet evidence justifies the added configuration and failure modes. Packet shape, bounds, and safe identifier syntax are still validated.
+
+### 5. Bounded, transition-level logging — implemented
 
 Log lifecycle transitions rather than every packet. Useful fields are:
 
@@ -168,6 +170,8 @@ Log lifecycle transitions rather than every packet. Useful fields are:
 - successful recovery after a stale or error state.
 
 Warnings should be emitted once per state transition. Continued silence should not produce a warning every watchdog tick.
+
+Malformed-packet warnings are bounded once per category and listener generation. Arbitrary packet bodies are never logged, and external identifier fields are length-limited and sanitized before appearing in transition logs.
 
 ### 6. Support-policy honesty
 
@@ -188,8 +192,8 @@ Keep deterministic fake-clock and fake-socket tests for lifecycle races.
 
 - Five, ten, and fourteen minutes of silence do not restart a normal one-minute station.
 - The exact 15-minute boundary schedules exactly one restart.
-- A valid selected-station observation resets freshness.
-- `rapid_wind`, events, status messages, malformed observations, and foreign-station observations do not reset freshness.
+- A valid observation resets freshness.
+- `rapid_wind`, events, status messages, and malformed observations do not reset freshness.
 - A longer valid advertised report interval produces the intended three-times interval threshold.
 - Missing, zero, negative, nonnumeric, and implausibly large intervals fall back safely.
 - A replacement listener receives a full startup grace period.
@@ -207,7 +211,7 @@ Keep deterministic fake-clock and fake-socket tests for lifecycle races.
 - The old socket closes before the replacement binds.
 - Delayed events from an old generation cannot affect the current generation.
 - Repeated failure reaches and remains at the capped retry delay.
-- A valid selected-station observation resets error backoff.
+- A valid observation resets error backoff.
 - Repeated recovery cycles leave one socket, one watchdog, and at most one retry timer.
 
 ### Shutdown
@@ -228,8 +232,7 @@ Keep deterministic fake-clock and fake-socket tests for lifecycle races.
 - Documented nullable fields are handled safely.
 - Unknown trailing fields are ignored.
 - Unknown message types do not affect liveness.
-- A foreign hub or device cannot update state or reset liveness.
-- A source-IP change for the same selected serial remains valid.
+- Station identity and foreign-station behavior remain deferred as described above.
 - Duplicate observations do not produce duplicate output records.
 
 ### Logging
@@ -348,14 +351,10 @@ Do not add these without evidence or a separate architectural decision:
 - **Cloud failover inside the listener:** WeatherFlow recommends remote interfaces, but adding REST or WebSocket failover requires credentials, source arbitration, freshness rules, and its own recovery lifecycle. Treat that as a separate feature.
 - **A general-purpose connection state-machine framework:** the current listener needs only explicit ownership, freshness, restart, and disposal states.
 
-## Recommended implementation order
+## Remaining implementation order
 
-1. Add disposal and Homebridge shutdown tests.
-2. Use a monotonic freshness clock.
-3. Strengthen runtime packet validation and bound the report interval.
-4. Filter liveness and updates by selected hub/device identity.
-5. Add transition-level diagnostics.
-6. Add real-socket integration tests.
-7. Run the macOS LaunchDaemon reproduction and soak matrix.
-8. Address Node support and TypeScript modernization separately.
-9. Add deeper telemetry or cloud failover only if operational evidence warrants it.
+1. Run the macOS LaunchDaemon reproduction and soak matrix against the hardened listener.
+2. Add real-socket integration tests if fake-socket coverage or operational evidence proves insufficient.
+3. Address Node support and TypeScript modernization separately.
+4. Add station identity selection only if multi-station or foreign-packet evidence justifies it.
+5. Add deeper telemetry or cloud failover only if operational evidence warrants it.

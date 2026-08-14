@@ -11,6 +11,7 @@
 const converter = require('../util/converter'),
 	moment = require('moment-timezone'),
 	dgram = require("dgram"),
+	performance = require("perf_hooks").performance,
 	wformula = require('weather-formulas'),
 	axios = require('axios');
 
@@ -143,17 +144,20 @@ class TempestAPI
 		this.prevMsg = "";
 
 		this.createSocket = dependencies.createSocket || ((options) => dgram.createSocket(options));
-		this.now = dependencies.now || (() => Date.now());
+		this.now = dependencies.now || (() => performance.now());
 		this.setInterval = dependencies.setInterval || setInterval;
 		this.clearInterval = dependencies.clearInterval || clearInterval;
 		this.setTimeout = dependencies.setTimeout || setTimeout;
+		this.clearTimeout = dependencies.clearTimeout || clearTimeout;
 
 		this.server = null;
+		this.disposed = false;
 		this.lastObservationAt = null;
 		this.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
 		this.udpWatchdogTimer = null;
 		this.udpRestartTimer = null;
 		this.udpRestartPending = false;
+		this.udpClosingServer = null;
 		this.udpFailureCount = 0;
 
 		this.createUdpServer();
@@ -161,6 +165,8 @@ class TempestAPI
 
 	createUdpServer()
 	{
+		if (this.disposed) return;
+
 		let server;
 		try {
 			server = this.createSocket({type: 'udp4', reuseAddr: true});
@@ -171,11 +177,11 @@ class TempestAPI
 
 		this.server = server;
 		server.on('error', (err) => {
-			if (server === this.server) this.handleUdpError(server, err);
+			if (!this.disposed && server === this.server) this.handleUdpError(server, err);
 		});
 
 		server.on('message', (msg, rinfo) => {
-			if (server !== this.server) return;
+			if (this.disposed || server !== this.server) return;
 			try {
 				var message = JSON.parse(msg);
 				this.log.debug(`Server got: ${message.type}`);
@@ -193,7 +199,7 @@ class TempestAPI
 		});
 
 		server.on('listening', () => {
-			if (server !== this.server) return;
+			if (this.disposed || server !== this.server) return;
 			const address = server.address();
 			this.lastObservationAt = this.now();
 			this.startUdpWatchdog();
@@ -203,7 +209,7 @@ class TempestAPI
 		server.on('close', () => {
 			if (server !== this.server) return;
 			this.server = null;
-			if (!this.udpRestartPending) {
+			if (!this.disposed && !this.udpRestartPending) {
 				this.scheduleUdpRestart("server closed unexpectedly", this.nextUdpRetryDelay());
 			}
 		});
@@ -217,7 +223,7 @@ class TempestAPI
 
 	handleUdpError(server, err)
 	{
-		if ((server && server !== this.server) || this.udpRestartPending) return;
+		if (this.disposed || (server && server !== this.server) || this.udpRestartPending) return;
 		this.log.error(`server error:\n${err.stack || err}`);
 		this.scheduleUdpRestart("socket error", this.nextUdpRetryDelay());
 	}
@@ -231,17 +237,22 @@ class TempestAPI
 
 	scheduleUdpRestart(reason, delay)
 	{
-		if (this.udpRestartPending) return;
+		if (this.disposed || this.udpRestartPending) return;
 		this.udpRestartPending = true;
 		this.stopUdpWatchdog();
 
 		const server = this.server;
 		const queueReplacement = () => {
+			if (server === this.udpClosingServer) this.udpClosingServer = null;
 			if (server === this.server) this.server = null;
+			if (this.disposed) {
+				this.udpRestartPending = false;
+				return;
+			}
 			this.udpRestartTimer = this.setTimeout(() => {
 				this.udpRestartTimer = null;
 				this.udpRestartPending = false;
-				this.createUdpServer();
+				if (!this.disposed) this.createUdpServer();
 			}, delay);
 		};
 
@@ -253,15 +264,41 @@ class TempestAPI
 		}
 
 		try {
+			this.udpClosingServer = server;
 			server.close(queueReplacement);
 		} catch (err) {
+			this.udpClosingServer = null;
 			this.log.debug(`Unable to close WeatherFlow UDP server: ${err.message}`);
 			queueReplacement();
 		}
 	}
 
+	dispose()
+	{
+		if (this.disposed) return;
+		this.disposed = true;
+		this.stopUdpWatchdog();
+
+		if (this.udpRestartTimer !== null) {
+			this.clearTimeout(this.udpRestartTimer);
+			this.udpRestartTimer = null;
+		}
+		this.udpRestartPending = false;
+
+		const server = this.server;
+		this.server = null;
+		if (!server || server === this.udpClosingServer) return;
+
+		try {
+			server.close();
+		} catch (err) {
+			this.log.debug(`Unable to close WeatherFlow UDP server during shutdown: ${err.message}`);
+		}
+	}
+
 	startUdpWatchdog()
 	{
+		if (this.disposed) return;
 		this.stopUdpWatchdog();
 		this.udpWatchdogTimer = this.setInterval(() => this.checkUdpFreshness(), UDP_WATCHDOG_INTERVAL);
 	}
@@ -276,7 +313,7 @@ class TempestAPI
 
 	checkUdpFreshness()
 	{
-		if (this.udpRestartPending || this.lastObservationAt === null) return;
+		if (this.disposed || this.udpRestartPending || this.lastObservationAt === null) return;
 		const observationAge = this.now() - this.lastObservationAt;
 		if (observationAge < this.observationStaleTimeout) return;
 

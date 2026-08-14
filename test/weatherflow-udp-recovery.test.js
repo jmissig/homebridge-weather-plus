@@ -2,7 +2,8 @@
 
 const assert = require('assert'),
 	EventEmitter = require('events'),
-	TempestAPI = require('../apis/weatherflow').TempestAPI;
+	TempestAPI = require('../apis/weatherflow').TempestAPI,
+	registerStationShutdown = require('../index').registerStationShutdown;
 
 const MINUTE = 60 * 1000;
 
@@ -82,12 +83,14 @@ class FakeClock
 
 class FakeSocket extends EventEmitter
 {
-	constructor(events)
+	constructor(events, deferClose = false)
 	{
 		super();
 		this.events = events;
+		this.deferClose = deferClose;
 		this.boundPort = null;
 		this.closeCount = 0;
+		this.pendingCloseCallback = null;
 	}
 
 	bind(port)
@@ -110,6 +113,16 @@ class FakeSocket extends EventEmitter
 	{
 		this.closeCount++;
 		this.events.push('close');
+		if (this.deferClose) {
+			this.pendingCloseCallback = callback;
+			return;
+		}
+		this.finishClose(callback);
+	}
+
+	finishClose(callback = this.pendingCloseCallback)
+	{
+		this.pendingCloseCallback = null;
 		this.emit('close');
 		if (callback) callback();
 	}
@@ -131,7 +144,7 @@ function createLog()
 	return log;
 }
 
-function createHarness()
+function createHarness(options = {})
 {
 	const clock = new FakeClock(),
 		events = [],
@@ -145,12 +158,13 @@ function createHarness()
 		dependencies = {
 			storage: storage,
 			createSocket: () => {
-				const socket = new FakeSocket(events);
+				const socket = new FakeSocket(events, options.deferClose === true);
 				sockets.push(socket);
 				return socket;
 			},
 			now: () => clock.now(),
 			setTimeout: (callback, delay) => clock.setTimeout(callback, delay),
+			clearTimeout: (id) => clock.clearTimeout(id),
 			setInterval: (callback, delay) => clock.setInterval(callback, delay),
 			clearInterval: (id) => clock.clearInterval(id)
 		};
@@ -316,4 +330,68 @@ test('a replacement gets a full grace period before another stale recovery', () 
 	assert.strictEqual(harness.sockets.length, 2);
 	harness.clock.tick(MINUTE);
 	assert.strictEqual(harness.sockets.length, 3);
+});
+
+test('dispose closes the listener and cancels the watchdog', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+
+	harness.api.dispose();
+	assert.strictEqual(harness.api.disposed, true);
+	assert.strictEqual(harness.api.server, null);
+	assert.strictEqual(harness.api.udpWatchdogTimer, null);
+	assert.strictEqual(harness.sockets[0].closeCount, 1);
+
+	harness.clock.tick(60 * MINUTE);
+	assert.strictEqual(harness.sockets.length, 1);
+});
+
+test('dispose is idempotent', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+
+	harness.api.dispose();
+	harness.api.dispose();
+	assert.strictEqual(harness.sockets[0].closeCount, 1);
+});
+
+test('dispose cancels a pending error retry', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	harness.sockets[0].emit('error', new Error('test failure'));
+	assert.notStrictEqual(harness.api.udpRestartTimer, null);
+
+	harness.api.dispose();
+	assert.strictEqual(harness.api.udpRestartTimer, null);
+	harness.clock.tick(10 * MINUTE);
+	assert.strictEqual(harness.sockets.length, 1);
+});
+
+test('dispose while close is pending prevents a replacement', () => {
+	const harness = createHarness({deferClose: true});
+	harness.sockets[0].listen();
+	harness.sockets[0].emit('error', new Error('test failure'));
+	assert.strictEqual(harness.sockets[0].closeCount, 1);
+	assert.strictEqual(harness.api.udpRestartTimer, null);
+
+	harness.api.dispose();
+	harness.sockets[0].finishClose();
+	harness.clock.tick(10 * MINUTE);
+	assert.strictEqual(harness.sockets[0].closeCount, 1);
+	assert.strictEqual(harness.sockets.length, 1);
+});
+
+test('Homebridge shutdown disposes every disposable station', () => {
+	const homebridge = new EventEmitter();
+	let firstDisposeCount = 0;
+	let secondDisposeCount = 0;
+	registerStationShutdown(homebridge, [
+		{dispose: () => firstDisposeCount++},
+		{},
+		{dispose: () => secondDisposeCount++}
+	]);
+
+	homebridge.emit('shutdown');
+	assert.strictEqual(firstDisposeCount, 1);
+	assert.strictEqual(secondDisposeCount, 1);
 });

@@ -44,6 +44,16 @@ function isNonNegativeInteger(value)
 	return Number.isSafeInteger(value) && value >= 0;
 }
 
+function isIntegerInRange(value, minimum, maximum)
+{
+	return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+}
+
+function isValidUdpIdentifier(value)
+{
+	return typeof value === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(value);
+}
+
 class TempestAPI
 {
 	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, dependencies = {})
@@ -289,7 +299,7 @@ class TempestAPI
 		}
 
 		if (message.type === "device_status") {
-			const valid = typeof message.serial_number === "string" &&
+			const valid = isValidUdpIdentifier(message.serial_number) &&
 				isValidEpochSeconds(message.timestamp) &&
 				isNonNegativeInteger(message.sensor_status);
 			if (!valid) this.warnUdpPacket("invalid-device-status", "invalid device_status message", generation);
@@ -297,14 +307,14 @@ class TempestAPI
 		}
 
 		if (message.type === "evt_precip") {
-			const valid = typeof message.serial_number === "string" && Array.isArray(message.evt) &&
+			const valid = isValidUdpIdentifier(message.serial_number) && Array.isArray(message.evt) &&
 				message.evt.length >= 1 && isValidEpochSeconds(message.evt[0]);
 			if (!valid) this.warnUdpPacket("invalid-evt-precip", "invalid evt_precip message", generation);
 			return valid ? {message: message, observation: false, parse: true} : null;
 		}
 
 		if (message.type === "rapid_wind") {
-			const valid = typeof message.serial_number === "string" && Array.isArray(message.ob) &&
+			const valid = isValidUdpIdentifier(message.serial_number) && Array.isArray(message.ob) &&
 				message.ob.length >= 3 && isValidEpochSeconds(message.ob[0]) &&
 				isFiniteInRange(message.ob[1], 0, 200) && isFiniteInRange(message.ob[2], 0, 360);
 			if (!valid) this.warnUdpPacket("invalid-rapid-wind", "invalid rapid_wind message", generation);
@@ -317,7 +327,7 @@ class TempestAPI
 				reportIntervalIndex: 7,
 				validValues: (values) => isFiniteInRange(values[1], 0, 2000) &&
 					isFiniteInRange(values[2], -100, 100) && isFiniteInRange(values[3], 0, 100) &&
-					isNonNegativeInteger(values[4]) && isFiniteInRange(values[5], 0, 1000) &&
+					isIntegerInRange(values[4], 0, 1000) && isFiniteInRange(values[5], 0, 1000) &&
 					isFiniteInRange(values[6], 0, 10)
 			},
 			obs_sky: {
@@ -339,12 +349,12 @@ class TempestAPI
 					isFiniteInRange(values[10], 0, 100) && isFiniteInRange(values[11], 0, 5000) &&
 					isFiniteInRange(values[12], 0, 1000) && Number.isInteger(values[13]) &&
 					isFiniteInRange(values[13], 0, 3) && isFiniteInRange(values[14], 0, 1000) &&
-					isNonNegativeInteger(values[15]) && isFiniteInRange(values[16], 0, 10)
+					isIntegerInRange(values[15], 0, 1000) && isFiniteInRange(values[16], 0, 10)
 			}
 		};
 		const layout = observationLayouts[message.type];
 		if (!layout) return null;
-		if (typeof message.serial_number !== "string" || !Array.isArray(message.obs) ||
+		if (!isValidUdpIdentifier(message.serial_number) || !Array.isArray(message.obs) ||
 			!Array.isArray(message.obs[0]) || message.obs[0].length < layout.minimumLength) {
 			this.warnUdpPacket(`invalid-${message.type}`, `invalid ${message.type} structure`, generation);
 			return null;

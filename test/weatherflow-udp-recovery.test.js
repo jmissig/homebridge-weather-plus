@@ -584,7 +584,7 @@ test('the first observation after replacement logs one successful recovery', () 
 	harness.sockets[1].listen();
 
 	const message = tempestObservation(1);
-	message.serial_number = 'ST-TEST\nINJECTED, source=FORGED';
+	message.serial_number = 'ST-TEST';
 	message.hub_sn = 'HB-TEST\u2028, restart=99';
 	harness.sockets[1].datagram(Buffer.from(JSON.stringify(message)), {
 		address: '192.0.2.10',
@@ -597,7 +597,7 @@ test('the first observation after replacement logs one successful recovery', () 
 	assert.strictEqual(recovered.length, 1);
 	assert(recovered[0][1].includes('generation=2'));
 	assert(recovered[0][1].includes('restart=1'));
-	assert(recovered[0][1].includes('serial=ST-TEST?INJECTED? source?FORGED'));
+	assert(recovered[0][1].includes('serial=ST-TEST'));
 	assert(recovered[0][1].includes('hub=HB-TEST?? restart?99'));
 	assert(recovered[0][1].includes('source=192.0.2.10:50222'));
 	assert(recovered[0][1].includes('reportIntervalMinutes=1'));
@@ -644,4 +644,29 @@ test('malformed packet warnings are bounded per category and listener generation
 	ignoredWarnings = harness.log.entries.filter((entry) => entry[0] === 'warn' &&
 		entry[1].includes('Ignoring WeatherFlow UDP packet'));
 	assert.strictEqual(ignoredWarnings.length, 3);
+});
+
+test('unsafe identifiers cannot enter weather state or recurring persistence logs', () => {
+	const harness = createHarness();
+	const message = tempestObservation(1);
+	message.serial_number = 'ST-TEST\nFORGED';
+	harness.sockets[0].message(message);
+	harness.api.save(harness.api.currentReport);
+
+	assert.strictEqual(harness.api.currentReport.ObservationStation, 'Unknown');
+	assert.strictEqual(JSON.stringify(harness.log.entries).includes('FORGED'), false);
+});
+
+test('lightning counts above the downstream characteristic maximum are rejected', () => {
+	const harness = createHarness();
+	const message = tempestObservation(1);
+	message.obs[0][15] = 1001;
+	harness.sockets[0].message(message);
+
+	assert.strictEqual(harness.api.currentReport.ObservationStation, 'Unknown');
+	assert.strictEqual(harness.api.currentReport.LightningStrikes, 0);
+
+	message.obs[0][15] = 1000;
+	harness.sockets[0].message(message);
+	assert.strictEqual(harness.api.currentReport.LightningStrikes, 1000);
 });

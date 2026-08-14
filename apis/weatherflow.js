@@ -16,10 +16,33 @@ const converter = require('../util/converter'),
 	axios = require('axios');
 
 const UDP_PORT = 50222,
+	UDP_MAX_DATAGRAM_SIZE = 16 * 1024,
+	UDP_MAX_REPORT_INTERVAL_MINUTES = 60,
 	UDP_WATCHDOG_INTERVAL = 60 * 1000,
 	UDP_MIN_STALE_TIMEOUT = 15 * 60 * 1000,
 	UDP_REPORT_INTERVAL_MULTIPLIER = 3,
 	UDP_RETRY_DELAYS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
+
+function isFiniteNumber(value)
+{
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function isFiniteInRange(value, minimum, maximum)
+{
+	return isFiniteNumber(value) && value >= minimum && value <= maximum;
+}
+
+function isValidEpochSeconds(value)
+{
+	// JavaScript Date's inclusive range is +/- 8.64e15 milliseconds.
+	return isFiniteInRange(value, 1, 8.64e12);
+}
+
+function isNonNegativeInteger(value)
+{
+	return Number.isSafeInteger(value) && value >= 0;
+}
 
 class TempestAPI
 {
@@ -182,20 +205,7 @@ class TempestAPI
 
 		server.on('message', (msg, rinfo) => {
 			if (this.disposed || server !== this.server) return;
-			try {
-				var message = JSON.parse(msg);
-				this.log.debug(`Server got: ${message.type}`);
-				if (msg.toString() === this.prevMsg) {
-					this.log.debug(`Duplicate msg ${msg}`);
-				} else {
-					this.recordUdpObservation(message);
-					this.parseMessage(message);
-				}
-				this.prevMsg = msg.toString();
-			}
-			catch(ex) {
-				this.log(`JSON Parse Exception: ${msg} ${ex}`);
-			}
+			this.handleUdpDatagram(msg, rinfo);
 		});
 
 		server.on('listening', () => {
@@ -219,6 +229,131 @@ class TempestAPI
 		} catch (err) {
 			this.handleUdpError(server, err);
 		}
+	}
+
+	handleUdpDatagram(msg, rinfo)
+	{
+		const decoded = this.decodeUdpDatagram(msg);
+		if (!decoded) return;
+		if (decoded.observation) {
+			// Every structurally valid observation proves that the UDP path is alive,
+			// even if its payload is a duplicate or cannot update weather values.
+			this.recordUdpObservation(decoded.reportIntervalMinutes);
+		}
+
+		const rawMessage = msg.toString();
+		if (rawMessage === this.prevMsg) {
+			this.log.debug(`Duplicate WeatherFlow UDP message: ${decoded.message.type}`);
+			return;
+		}
+		this.prevMsg = rawMessage;
+
+		this.log.debug(`Server got: ${decoded.message.type}`);
+		if (!decoded.parse) {
+			this.log.debug(`Ignoring invalid WeatherFlow UDP ${decoded.message.type} data`);
+			return;
+		}
+
+		this.parseMessage(decoded.message);
+	}
+
+	decodeUdpDatagram(msg)
+	{
+		if (!Buffer.isBuffer(msg)) {
+			this.log.debug("Ignoring WeatherFlow UDP payload that is not a buffer");
+			return null;
+		}
+		if (msg.length > UDP_MAX_DATAGRAM_SIZE) {
+			this.log.debug(`Ignoring oversized WeatherFlow UDP payload (${msg.length} bytes)`);
+			return null;
+		}
+
+		let message;
+		try {
+			message = JSON.parse(msg.toString("utf8"));
+		} catch (err) {
+			this.log.debug(`Ignoring malformed WeatherFlow UDP JSON: ${err.message}`);
+			return null;
+		}
+
+		return this.validateUdpMessage(message);
+	}
+
+	validateUdpMessage(message)
+	{
+		if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string") {
+			this.log.debug("Ignoring WeatherFlow UDP message with an invalid envelope");
+			return null;
+		}
+
+		if (message.type === "device_status") {
+			const valid = typeof message.serial_number === "string" &&
+				isValidEpochSeconds(message.timestamp) &&
+				isNonNegativeInteger(message.sensor_status);
+			return valid ? {message: message, observation: false, parse: true} : null;
+		}
+
+		if (message.type === "evt_precip") {
+			const valid = typeof message.serial_number === "string" && Array.isArray(message.evt) &&
+				message.evt.length >= 1 && isValidEpochSeconds(message.evt[0]);
+			return valid ? {message: message, observation: false, parse: true} : null;
+		}
+
+		if (message.type === "rapid_wind") {
+			const valid = typeof message.serial_number === "string" && Array.isArray(message.ob) &&
+				message.ob.length >= 3 && isValidEpochSeconds(message.ob[0]) &&
+				isFiniteInRange(message.ob[1], 0, 200) && isFiniteInRange(message.ob[2], 0, 360);
+			return valid ? {message: message, observation: false, parse: true} : null;
+		}
+
+		const observationLayouts = {
+			obs_air: {
+				minimumLength: 7,
+				reportIntervalIndex: 7,
+				validValues: (values) => isFiniteInRange(values[1], 0, 2000) &&
+					isFiniteInRange(values[2], -100, 100) && isFiniteInRange(values[3], 0, 100) &&
+					isNonNegativeInteger(values[4]) && isFiniteInRange(values[5], 0, 1000) &&
+					isFiniteInRange(values[6], 0, 10)
+			},
+			obs_sky: {
+				minimumLength: 13,
+				reportIntervalIndex: 9,
+				validValues: (values) => isFiniteInRange(values[1], 0, 2000000) &&
+					isFiniteInRange(values[2], 0, 100) && isFiniteInRange(values[3], 0, 1000) &&
+					isFiniteInRange(values[4], 0, 200) && isFiniteInRange(values[6], 0, 200) &&
+					isFiniteInRange(values[8], 0, 10) && isFiniteInRange(values[10], 0, 5000) &&
+					Number.isInteger(values[12]) && isFiniteInRange(values[12], 0, 3)
+			},
+			obs_st: {
+				minimumLength: 17,
+				reportIntervalIndex: 17,
+				validValues: (values) => isFiniteInRange(values[1], 0, 200) &&
+					isFiniteInRange(values[2], 0, 200) && isFiniteInRange(values[3], 0, 200) &&
+					isFiniteInRange(values[6], 0, 2000) && isFiniteInRange(values[7], -100, 100) &&
+					isFiniteInRange(values[8], 0, 100) && isFiniteInRange(values[9], 0, 2000000) &&
+					isFiniteInRange(values[10], 0, 100) && isFiniteInRange(values[11], 0, 5000) &&
+					isFiniteInRange(values[12], 0, 1000) && Number.isInteger(values[13]) &&
+					isFiniteInRange(values[13], 0, 3) && isFiniteInRange(values[14], 0, 1000) &&
+					isNonNegativeInteger(values[15]) && isFiniteInRange(values[16], 0, 10)
+			}
+		};
+		const layout = observationLayouts[message.type];
+		if (!layout || typeof message.serial_number !== "string" || !Array.isArray(message.obs) ||
+			!Array.isArray(message.obs[0]) || message.obs[0].length < layout.minimumLength) return null;
+
+		const observation = message.obs[0];
+		if (!isValidEpochSeconds(observation[0])) return null;
+
+		const advertisedInterval = observation[layout.reportIntervalIndex];
+		const reportIntervalMinutes = isFiniteNumber(advertisedInterval) && advertisedInterval > 0 &&
+			advertisedInterval <= UDP_MAX_REPORT_INTERVAL_MINUTES ? advertisedInterval : null;
+
+		return {
+			message: message,
+			observation: true,
+			parse: layout.validValues(observation),
+			reportIntervalMinutes: reportIntervalMinutes
+		};
 	}
 
 	handleUdpError(server, err)
@@ -321,26 +456,17 @@ class TempestAPI
 		this.scheduleUdpRestart(`no observations for ${observationAgeMinutes} minutes`, 0);
 	}
 
-	recordUdpObservation(message)
+	recordUdpObservation(reportIntervalMinutes)
 	{
-		const reportIntervalIndexes = {
-			obs_air: 7,
-			obs_sky: 9,
-			obs_st: 17
-		};
-		const reportIntervalIndex = reportIntervalIndexes[message.type];
-		const observation = message.obs && message.obs[0];
-		if (typeof reportIntervalIndex === 'undefined' || !Array.isArray(observation)) return;
-		if (!Number.isFinite(Number(observation[0])) || Number(observation[0]) <= 0) return;
-
 		this.lastObservationAt = this.now();
 		this.udpFailureCount = 0;
-		const reportIntervalMinutes = Number(observation[reportIntervalIndex]);
 		if (Number.isFinite(reportIntervalMinutes) && reportIntervalMinutes > 0) {
 			this.observationStaleTimeout = Math.max(
 				UDP_MIN_STALE_TIMEOUT,
 				reportIntervalMinutes * 60 * 1000 * UDP_REPORT_INTERVAL_MULTIPLIER
 			);
+		} else {
+			this.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
 		}
 	}
 

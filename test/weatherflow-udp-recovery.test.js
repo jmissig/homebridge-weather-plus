@@ -129,7 +129,12 @@ class FakeSocket extends EventEmitter
 
 	message(message)
 	{
-		this.emit('message', Buffer.from(JSON.stringify(message)), {});
+		this.datagram(Buffer.from(JSON.stringify(message)));
+	}
+
+	datagram(payload, rinfo = {address: '192.0.2.10', port: 50222})
+	{
+		this.emit('message', payload, rinfo);
 	}
 }
 
@@ -186,6 +191,28 @@ function tempestObservation(reportInterval)
 		type: 'obs_st',
 		hub_sn: 'HB-TEST',
 		obs: [observation],
+		firmware_revision: 1
+	};
+}
+
+function airObservation(reportInterval = 1)
+{
+	return {
+		serial_number: 'AR-TEST',
+		type: 'obs_air',
+		hub_sn: 'HB-TEST',
+		obs: [[1588948614, 1000, 20, 50, 0, 0, 3.5, reportInterval]],
+		firmware_revision: 1
+	};
+}
+
+function skyObservation(reportInterval = 1)
+{
+	return {
+		serial_number: 'SK-TEST',
+		type: 'obs_sky',
+		hub_sn: 'HB-TEST',
+		obs: [[1588948614, 1000, 1, 0, 1, 2, 3, 180, 3.5, reportInterval, 100, null, 0]],
 		firmware_revision: 1
 	};
 }
@@ -394,4 +421,120 @@ test('Homebridge shutdown disposes every disposable station', () => {
 	homebridge.emit('shutdown');
 	assert.strictEqual(firstDisposeCount, 1);
 	assert.strictEqual(secondDisposeCount, 1);
+});
+
+test('accepts supported observation layouts and ignores trailing fields', () => {
+	const harness = createHarness();
+	const messages = [airObservation(), skyObservation(), tempestObservation(1)];
+	messages.forEach((message) => {
+		message.obs[0].push('future-field');
+		const result = harness.api.validateUdpMessage(message);
+		assert.strictEqual(result.observation, true);
+		assert.strictEqual(result.parse, true);
+		assert.strictEqual(result.reportIntervalMinutes, 1);
+	});
+});
+
+test('rejects malformed, oversized, and non-object UDP payloads', () => {
+	const harness = createHarness();
+	assert.strictEqual(harness.api.decodeUdpDatagram(Buffer.from('{')), null);
+	assert.strictEqual(harness.api.decodeUdpDatagram(Buffer.alloc(16 * 1024 + 1)), null);
+	assert.strictEqual(harness.api.decodeUdpDatagram(Buffer.from('null')), null);
+	assert.strictEqual(harness.api.decodeUdpDatagram(Buffer.from('[]')), null);
+	assert.strictEqual(harness.api.decodeUdpDatagram('not-a-buffer'), null);
+});
+
+test('a short observation does not reset listener freshness', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	harness.clock.tick(10 * MINUTE);
+	harness.sockets[0].message({
+		serial_number: 'ST-TEST',
+		type: 'obs_st',
+		obs: [[1588948614, 1, 2]]
+	});
+
+	harness.clock.tick(5 * MINUTE);
+	assert.strictEqual(harness.sockets.length, 2);
+});
+
+test('invalid observation data proves transport health without changing weather values', () => {
+	const harness = createHarness();
+	const message = tempestObservation(1);
+	message.obs[0][7] = 'invalid-temperature';
+	harness.sockets[0].listen();
+	harness.clock.tick(10 * MINUTE);
+	harness.sockets[0].message(message);
+
+	assert.strictEqual(harness.api.currentReport.Temperature, 0);
+	harness.clock.tick(14 * MINUTE);
+	assert.strictEqual(harness.sockets.length, 1);
+	harness.clock.tick(MINUTE);
+	assert.strictEqual(harness.sockets.length, 2);
+});
+
+test('an implausible report interval falls back to the minimum stale timeout', () => {
+	const harness = createHarness();
+	harness.sockets[0].listen();
+	harness.sockets[0].message(tempestObservation(1000));
+	assert.strictEqual(harness.api.observationStaleTimeout, 15 * MINUTE);
+
+	harness.clock.tick(15 * MINUTE);
+	assert.strictEqual(harness.sockets.length, 2);
+});
+
+test('a missing trailing report interval falls back without discarding the observation', () => {
+	const harness = createHarness();
+	const message = tempestObservation(30);
+	harness.sockets[0].listen();
+	harness.sockets[0].message(message);
+	assert.strictEqual(harness.api.observationStaleTimeout, 90 * MINUTE);
+
+	message.obs[0].pop();
+	harness.sockets[0].message(message);
+	assert.strictEqual(harness.api.observationStaleTimeout, 15 * MINUTE);
+	assert.strictEqual(harness.api.currentReport.ObservationStation, 'ST-TEST');
+});
+
+test('duplicate observations continue to prove UDP transport freshness', () => {
+	const harness = createHarness();
+	const message = tempestObservation(1);
+	harness.sockets[0].listen();
+	harness.sockets[0].message(message);
+	harness.clock.tick(10 * MINUTE);
+	harness.sockets[0].message(message);
+	harness.clock.tick(10 * MINUTE);
+
+	assert.strictEqual(harness.sockets.length, 1);
+});
+
+test('finite but unsafe observation values never reach the legacy parser', () => {
+	const harness = createHarness();
+	const unsafeTimestamp = tempestObservation(1);
+	unsafeTimestamp.obs[0][0] = 1e308;
+	harness.sockets[0].message(unsafeTimestamp);
+
+	const unsafeTemperature = tempestObservation(1);
+	unsafeTemperature.obs[0][7] = 100000;
+	harness.sockets[0].message(unsafeTemperature);
+
+	assert.strictEqual(harness.api.currentReport.ObservationStation, 'Unknown');
+	assert.strictEqual(harness.api.currentReport.Temperature, 0);
+});
+
+test('invalid non-observation messages do not mutate current weather', () => {
+	const harness = createHarness();
+	harness.sockets[0].message({
+		serial_number: 'ST-TEST',
+		type: 'rapid_wind',
+		ob: [1588948614, 'fast', 180]
+	});
+	harness.sockets[0].message({
+		type: 'device_status',
+		serial_number: null,
+		timestamp: 1588948614,
+		sensor_status: 0
+	});
+	assert.strictEqual(harness.api.currentReport.WindSpeed, 0);
+	assert.strictEqual(harness.api.currentReport.ObservationStation, 'Unknown');
 });

@@ -174,7 +174,7 @@ function createHarness(options = {})
 			clearInterval: (id) => clock.clearInterval(id)
 		};
 
-	const api = new TempestAPI('', '', false, log, '/tmp/weatherflow-test', dependencies);
+	const api = new TempestAPI('', '', false, log, '/tmp/weatherflow-test', undefined, false, undefined, dependencies);
 	return {api: api, clock: clock, events: events, log: log, sockets: sockets};
 }
 

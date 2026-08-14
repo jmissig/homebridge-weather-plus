@@ -19,6 +19,11 @@ const converter = require('../util/converter'),
 const TEMPEST_LIGHTNING_FAULT_MASK = 0x00000007;
 const OBSERVATIONS_FILENAME = "weather-observations.jsonl";
 const OBSERVATION_SCHEMA = "weather.current_report.v2";
+const UDP_PORT = 50222,
+	UDP_WATCHDOG_INTERVAL = 60 * 1000,
+	UDP_MIN_STALE_TIMEOUT = 15 * 60 * 1000,
+	UDP_REPORT_INTERVAL_MULTIPLIER = 3,
+	UDP_RETRY_DELAYS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
 
 let lastEmittedObservationKey = null;
 
@@ -34,7 +39,7 @@ function resolveObservationOutputPath(cacheDirectory, configuredPath)
 
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter, observationOutputEnabled, observationOutputPath)
+	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, statusFaultFilter, observationOutputEnabled, observationOutputPath, dependencies = {})
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -95,7 +100,7 @@ class TempestAPI
 		this.locationId = locationId;
 		this.statusFaultFilter = statusFaultFilter || "ignoreLightning";
 		
-		this.storage = require('node-persist');
+		this.storage = dependencies.storage || require('node-persist');
 		// The saved data is only valid for up to 24hrs (TTL)
 		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
 		this.observationOutputEnabled = observationOutputEnabled === true;
@@ -166,36 +171,170 @@ class TempestAPI
 		// Keep track of previous message so that
 		// we can remove duplicates
 		this.prevMsg = "";
-	
-		// Create UDP listener and start listening
-		this.server = dgram.createSocket({type: 'udp4', reuseAddr: true});
-		this.server.on('error', (err) => {
-			  this.log.error(`server error:\n${err.stack}`);
-			  this.server.close();
-			  });
-	
-		this.server.on('message', (msg, rinfo) => {
+
+		this.createSocket = dependencies.createSocket || ((options) => dgram.createSocket(options));
+		this.now = dependencies.now || (() => Date.now());
+		this.setInterval = dependencies.setInterval || setInterval;
+		this.clearInterval = dependencies.clearInterval || clearInterval;
+		this.setTimeout = dependencies.setTimeout || setTimeout;
+
+		this.server = null;
+		this.lastObservationAt = null;
+		this.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
+		this.udpWatchdogTimer = null;
+		this.udpRestartTimer = null;
+		this.udpRestartPending = false;
+		this.udpFailureCount = 0;
+
+		this.createUdpServer();
+	}
+
+	createUdpServer()
+	{
+		let server;
+		try {
+			server = this.createSocket({type: 'udp4', reuseAddr: true});
+		} catch (err) {
+			this.handleUdpError(null, err);
+			return;
+		}
+
+		this.server = server;
+		server.on('error', (err) => {
+			if (server === this.server) this.handleUdpError(server, err);
+		});
+
+		server.on('message', (msg, rinfo) => {
+			if (server !== this.server) return;
 			try {
 				var message = JSON.parse(msg);
 				this.log.debug(`Server got: ${message.type}`);
 				if (msg.toString() === this.prevMsg) {
-				    this.log.debug(`Duplicate msg ${msg}`);
+					this.log.debug(`Duplicate msg ${msg}`);
 				} else {
-				    this.parseMessage(message);
+					this.recordUdpObservation(message);
+					this.parseMessage(message);
 				}
 				this.prevMsg = msg.toString();
-				}
+			}
 			catch(ex) {
 				this.log(`JSON Parse Exception: ${msg} ${ex}`);
-				}
-			});
-	
-		this.server.on('listening', () => {
-			  const address = this.server.address();
-			  this.log(`server listening ${address.address}:${address.port}`);
-			  });
-	
-		this.server.bind(50222);
+			}
+		});
+
+		server.on('listening', () => {
+			if (server !== this.server) return;
+			const address = server.address();
+			this.lastObservationAt = this.now();
+			this.startUdpWatchdog();
+			this.log(`server listening ${address.address}:${address.port}`);
+		});
+
+		server.on('close', () => {
+			if (server !== this.server) return;
+			this.server = null;
+			if (!this.udpRestartPending) {
+				this.scheduleUdpRestart("server closed unexpectedly", this.nextUdpRetryDelay());
+			}
+		});
+
+		try {
+			server.bind(UDP_PORT);
+		} catch (err) {
+			this.handleUdpError(server, err);
+		}
+	}
+
+	handleUdpError(server, err)
+	{
+		if ((server && server !== this.server) || this.udpRestartPending) return;
+		this.log.error(`server error:\n${err.stack || err}`);
+		this.scheduleUdpRestart("socket error", this.nextUdpRetryDelay());
+	}
+
+	nextUdpRetryDelay()
+	{
+		const delayIndex = Math.min(this.udpFailureCount, UDP_RETRY_DELAYS.length - 1);
+		this.udpFailureCount++;
+		return UDP_RETRY_DELAYS[delayIndex];
+	}
+
+	scheduleUdpRestart(reason, delay)
+	{
+		if (this.udpRestartPending) return;
+		this.udpRestartPending = true;
+		this.stopUdpWatchdog();
+
+		const server = this.server;
+		const queueReplacement = () => {
+			if (server === this.server) this.server = null;
+			this.udpRestartTimer = this.setTimeout(() => {
+				this.udpRestartTimer = null;
+				this.udpRestartPending = false;
+				this.createUdpServer();
+			}, delay);
+		};
+
+		const retryDescription = delay > 0 ? ` in ${Math.round(delay / 1000)} seconds` : "";
+		this.log.warn(`Restarting WeatherFlow UDP server${retryDescription} (${reason})`);
+		if (!server) {
+			queueReplacement();
+			return;
+		}
+
+		try {
+			server.close(queueReplacement);
+		} catch (err) {
+			this.log.debug(`Unable to close WeatherFlow UDP server: ${err.message}`);
+			queueReplacement();
+		}
+	}
+
+	startUdpWatchdog()
+	{
+		this.stopUdpWatchdog();
+		this.udpWatchdogTimer = this.setInterval(() => this.checkUdpFreshness(), UDP_WATCHDOG_INTERVAL);
+	}
+
+	stopUdpWatchdog()
+	{
+		if (this.udpWatchdogTimer !== null) {
+			this.clearInterval(this.udpWatchdogTimer);
+			this.udpWatchdogTimer = null;
+		}
+	}
+
+	checkUdpFreshness()
+	{
+		if (this.udpRestartPending || this.lastObservationAt === null) return;
+		const observationAge = this.now() - this.lastObservationAt;
+		if (observationAge < this.observationStaleTimeout) return;
+
+		const observationAgeMinutes = Math.floor(observationAge / (60 * 1000));
+		this.scheduleUdpRestart(`no observations for ${observationAgeMinutes} minutes`, 0);
+	}
+
+	recordUdpObservation(message)
+	{
+		const reportIntervalIndexes = {
+			obs_air: 7,
+			obs_sky: 9,
+			obs_st: 17
+		};
+		const reportIntervalIndex = reportIntervalIndexes[message.type];
+		const observation = message.obs && message.obs[0];
+		if (typeof reportIntervalIndex === 'undefined' || !Array.isArray(observation)) return;
+		if (!Number.isFinite(Number(observation[0])) || Number(observation[0]) <= 0) return;
+
+		this.lastObservationAt = this.now();
+		this.udpFailureCount = 0;
+		const reportIntervalMinutes = Number(observation[reportIntervalIndex]);
+		if (Number.isFinite(reportIntervalMinutes) && reportIntervalMinutes > 0) {
+			this.observationStaleTimeout = Math.max(
+				UDP_MIN_STALE_TIMEOUT,
+				reportIntervalMinutes * 60 * 1000 * UDP_REPORT_INTERVAL_MULTIPLIER
+			);
+		}
 	}
 
 	logDerivedValueWarning(key, error)

@@ -8,7 +8,7 @@
     "test": "node test/characteristics-perms.test.js && npm run verify",
     "verify": "npm run verify:dependencies && npm run verify:tempest",
     "verify:dependencies": "node test/weather-formulas-contract.test.js",
-    "verify:tempest": "node test/tempest-udp-contract.test.js && node test/tempest-forecast-contract.test.js"
+    "verify:tempest": "node test/weatherflow-udp-recovery.test.js && node test/tempest-udp-contract.test.js && node test/tempest-forecast-contract.test.js"
   },
   "keywords": [
     "homebridge-plugin",

@@ -17,6 +17,15 @@ let Service,
 	HomebridgeAPI,
 	FakeGatoHistoryService;
 
+function registerStationShutdown(api, stations)
+{
+	api.on("shutdown", () => {
+		stations.forEach((station) => {
+			if (typeof station.dispose === "function") station.dispose();
+		});
+	});
+}
+
 module.exports = function (homebridge)
 {
 	// Homekit services and characteristics
@@ -120,6 +129,8 @@ function WeatherPlusPlatform(_log, _config)
 			}
 		});
 	});
+
+	registerStationShutdown(HomebridgeAPI, this.stations);
 
 	// Start update interval
 	this.updateWeather();
@@ -517,3 +528,5 @@ WeatherPlusPlatform.prototype = {
 		}
 	}
 };
+
+module.exports.registerStationShutdown = registerStationShutdown;

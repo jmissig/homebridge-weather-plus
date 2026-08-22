@@ -1,14 +1,14 @@
 {
   "name": "homebridge-weather-plus",
   "displayName": "Weather Plus",
-  "version": "3.5.0-beta.1.jmissig.3",
+  "version": "3.5.0-beta.1.jmissig.4",
   "description": "A comprehensive weather plugin for homekit with current observations, forecasts and history.",
   "license": "MIT",
   "scripts": {
     "test": "node test/characteristics-perms.test.js && npm run verify",
     "verify": "npm run verify:dependencies && npm run verify:tempest",
     "verify:dependencies": "node test/weather-formulas-contract.test.js",
-    "verify:tempest": "node test/tempest-udp-contract.test.js && node test/tempest-forecast-contract.test.js"
+    "verify:tempest": "node test/weatherflow-udp-recovery.test.js && node test/tempest-udp-contract.test.js && node test/tempest-forecast-contract.test.js"
   },
   "keywords": [
     "homebridge-plugin",

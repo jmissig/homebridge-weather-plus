@@ -1,0 +1,54 @@
+name: Update compatible dependencies
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 9 * * 6"
+      timezone: America/Los_Angeles
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-compatible-dependencies
+  cancel-in-progress: true
+jobs:
+  update:
+    name: Update lockfile and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Update compatible dependencies
+        run: npm update
+
+      - name: Verify updated dependencies
+        run: npm run verify
+
+      - name: Open or update dependency maintenance pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          add-paths: package-lock.json
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          commit-message: Update compatible npm dependencies
+          base: main
+          branch: automation/npm-compatible-updates
+          delete-branch: true
+          title: Update compatible npm dependencies
+          body: |
+            Updates the npm lockfile to the latest versions allowed by `package.json`.
+
+            `npm run verify` passed before this pull request was created or updated.
+

@@ -8,10 +8,19 @@ updates:
       day: "saturday"
       time: "09:00"
       timezone: America/Los_Angeles
-    allow:
-      - dependency-name: "*"
+    groups:
+      npm-compatible:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
-          - "version-update:semver-major"
+          - minor
+          - patch
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    # Major npm upgrades remain individual PRs for deliberate review.
     open-pull-requests-limit: 2
 
   - package-ecosystem: "github-actions"
@@ -26,5 +35,8 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 1
-

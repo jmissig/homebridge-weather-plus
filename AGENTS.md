@@ -2,6 +2,10 @@
 
 ## Fork scope
 
+Pending upstream fixes already incorporated are recorded in
+[the cherry-pick ledger](docs/upstream-cherry-picks.md). Consult it before
+reapplying upstream PRs or merging their eventual upstream equivalents.
+
 This fork exists to keep the WeatherFlow Tempest integration working. Weather Plus supports several other weather providers, but they are inherited upstream functionality rather than a maintenance goal for this fork.
 
 - Prioritize the Tempest flow when choosing fixes, tests, dependency updates, and compatibility work.

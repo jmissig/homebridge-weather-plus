@@ -14,10 +14,10 @@ npm pack --dry-run
 ```
 
 `npm ci` installs the committed lockfile without updating dependencies.
-`npm test` covers Homebridge characteristic permissions, platform history and
-configuration, weather-formulas compatibility, Tempest UDP recovery, UDP
-observations, and forecasts. The tests use local fixtures/stubs, not a live
-station or Homebridge.
+`npm test` covers Homebridge characteristic permissions, platform history,
+configuration and temperature units, weather-formulas compatibility, Tempest
+UDP recovery, UDP observations, and forecasts. The tests use local fixtures/stubs,
+not a live station or Homebridge.
 
 This plugin ships plain JavaScript directly. It has no compilation, generated
 sources, lint script, or type-check script; there is no separate build command.

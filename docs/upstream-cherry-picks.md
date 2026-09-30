@@ -23,3 +23,21 @@ merges. Check this ledger before importing the same changes again.
   offline HAP stubs, Tempest simple/detailed categories, Eve class construction,
   raw-pressure precision and missing-reading fallback, and guarded lux history.
 - Verification: `npm ci`, `npm test`, `npm pack --dry-run`.
+
+## PR #331 — Eve temperature units
+
+- Source: [naofireblade/homebridge-weather-plus#331](https://github.com/naofireblade/homebridge-weather-plus/pull/331)
+  by 7onnie; incorporated 2026-09-29, after committing #327 as `8831bd9`.
+- Reviewed PR head/source commit: `84d8357ffd01c0db7f7827f34aa440ce19afca25`.
+- Integration: applied the complete functional diff. Dew point, minimum,
+  apparent and wet-bulb temperatures use Fahrenheit only at the Eve custom
+  characteristic write site for imperial/US units. Native HomeKit
+  CurrentTemperature writes remain Celsius. No version bump.
+- Regression coverage: actual platform write paths for current/forecast,
+  eve/eve2/home/both, all seven supported unit aliases, negative/zero/positive
+  temperatures, hidden values and unchanged non-temperature values. The test
+  reproduced the Celsius-under-Fahrenheit-label failure before applying the fix.
+  Wet bulb remains Eve-only; this PR does not add a native Home compatibility
+  service for it.
+- Verification: `npm ci`, `npm test`, `npm pack --dry-run`. Offline stubs
+  verify write routing; live Homebridge/Eve presentation is not tested.

@@ -24,9 +24,9 @@ sources, lint script, or type-check script; there is no separate build command.
 Do not add WAVE3's protobuf generation or build-toolchain changes here.
 The package listing must include `index.js`, `accessories/`, `apis/`, `util/`,
 `config.schema.json`, `package.json`, `README.md`, and `LICENSE`, without
-`node_modules/`, credentials, or local runtime data. The existing package also
-includes contributor docs, tests, changelog, and sample data; no packaging
-allowlist or release-artifact policy is changed by this automation work.
+`node_modules/`, credentials, or local runtime data. The explicit `.npmignore` preserves source-tree exclusions and omits
+contributor docs, tests, internal research notes, site configuration, and local
+package archives. Keep the changelog and user-facing sample data in the package.
 
 The read-only Verify workflow runs on pull requests (including Dependabot),
 pushes to `main`, and manual dispatch. It runs the commands above on both Node

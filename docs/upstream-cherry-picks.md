@@ -1,8 +1,24 @@
 # Upstream cherry-picks
 
-This fork selectively incorporates pending upstream PRs needed for Tempest and
-its shared HomeKit paths. These are adapted/squashed cherry-picks, not upstream
-merges. Check this ledger before importing the same changes again.
+This fork selectively incorporates upstream fixes needed for Tempest and its
+shared HomeKit paths. Check this ledger before importing the same changes again.
+
+## Current upstream baseline
+
+Rebased onto [`v3.5.0-beta.2`](https://github.com/naofireblade/homebridge-weather-plus/releases/tag/v3.5.0-beta.2)
+(`b699f6852492fc11058e7e7ed969d664e3a1acdf`) on 2026-10-09. Fork version:
+`3.5.0-beta.2.jmissig.1`.
+
+- PRs #327 and #331 below are now included in the upstream base. Their fork-local
+  regression tests and provenance remain; their functional patches are not
+  reapplied over the upstream equivalents.
+- Upstream also includes the fork's UDP recovery/hardening via PR #332
+  (`9cbdbcf`) and weather-formulas compatibility via PR #314 (`0600bfb`).
+  Retain the fork's extended Tempest constructor arguments in the UDP test harness
+  and run that suite as part of `verify:tempest`.
+- Preserve the fork's Tempest fault filtering, state/forecast fixes, opt-in JSONL
+  output, locked dependency updates, CI, and explicit npm packaging exclusions.
+- The historical commit IDs below refer to the pre-rebase history.
 
 ## PR #327 — General fixes
 

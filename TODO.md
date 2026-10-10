@@ -2,6 +2,10 @@
 
 Fork-local maintenance work for keeping the WeatherFlow Tempest integration current as Homebridge, Node.js, dependencies, and related APIs evolve.
 
+## Research references
+
+- [Tempest lightning research](docs/tempest-lightning-research.md) — occasionally check for answers.
+
 ## Compatibility maintenance
 
 - [ ] Replace the inherited `node-persist` dependency with a maintained, minimal storage implementation.

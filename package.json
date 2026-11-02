@@ -134,7 +134,7 @@
   },
   "dependencies": {
     "fakegato-history": "^0.6.7",
-    "geo-tz": "^6.0.0",
+    "geo-tz": "^8.1.10",
     "moment-timezone": "^0.6.4",
     "axios": "^1.7.9",
     "weather-formulas": "^1.0.9",
